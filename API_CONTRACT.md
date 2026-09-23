@@ -10,23 +10,24 @@
 ## 인증
 
 ### POST /auth/signup
-회원가입
+회원가입. 가입 시 요리 실력 등급(`skill_tier`)을 필수로 선택합니다. 이후 주제/제출/투표/결과는 모두 같은 등급 사용자끼리만 묶입니다(하수는 하수끼리, 중수는 중수끼리, 고수는 고수끼리).
 
 **요청**
 ```json
-{ "email": "a@test.com", "password": "pass1234", "nickname": "지원" }
+{ "email": "a@test.com", "password": "pass1234", "nickname": "지원", "skill_tier": "beginner" }
 ```
+`skill_tier`는 `"beginner"`(하) / `"intermediate"`(중) / `"advanced"`(상) 중 하나.
 
 **응답 200**
 ```json
 {
   "access_token": "eyJ...",
   "token_type": "bearer",
-  "user": { "id": 1, "email": "a@test.com", "nickname": "지원" }
+  "user": { "id": 1, "email": "a@test.com", "nickname": "지원", "skill_tier": "beginner" }
 }
 ```
 
-**에러**: 400 (이미 가입된 이메일)
+**에러**: 400 (이미 가입된 이메일), 422 (`skill_tier` 누락/잘못된 값)
 
 ### POST /auth/login
 로그인. 요청/응답 형태는 signup과 동일(email, password만 받음). 에러 401(이메일/비밀번호 불일치).

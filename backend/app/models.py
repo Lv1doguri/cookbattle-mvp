@@ -1,10 +1,14 @@
 import datetime as dt
+import enum
 
 from sqlalchemy import (
     Boolean,
     Column,
     Date,
     DateTime,
+)
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
@@ -15,6 +19,18 @@ from sqlalchemy.orm import relationship
 from .database import Base
 
 
+class SkillTier(str, enum.Enum):
+    """Self-selected cooking skill level, chosen once at signup.
+
+    Topics/submissions/votes/results are scoped per tier so beginners
+    only ever compete against beginners, not the whole user base.
+    """
+
+    BEGINNER = "beginner"  # 하
+    INTERMEDIATE = "intermediate"  # 중
+    ADVANCED = "advanced"  # 상
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -22,6 +38,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     nickname = Column(String, nullable=False)
+    skill_tier = Column(SQLEnum(SkillTier), nullable=False)
     created_at = Column(DateTime, default=dt.datetime.utcnow)
 
     submissions = relationship("Submission", back_populates="user")

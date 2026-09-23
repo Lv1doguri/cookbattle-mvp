@@ -2,12 +2,15 @@ import datetime as dt
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
+from .models import SkillTier
+
 
 # ---- auth ----
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     nickname: str
+    skill_tier: SkillTier
 
 
 class LoginRequest(BaseModel):
@@ -20,6 +23,7 @@ class UserOut(BaseModel):
     id: int
     email: EmailStr
     nickname: str
+    skill_tier: SkillTier
 
 
 class TokenResponse(BaseModel):
