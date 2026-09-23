@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 10080  # 7 days, convenient for a hackathon demo
     upload_dir: str = "./uploads"
+    google_client_id: str = ""
 
     class Config:
         env_file = ".env"

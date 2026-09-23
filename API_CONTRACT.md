@@ -32,6 +32,22 @@
 ### POST /auth/login
 로그인. 요청/응답 형태는 signup과 동일(email, password만 받음). 에러 401(이메일/비밀번호 불일치).
 
+### POST /auth/google
+구글 간편 로그인/회원가입. 프론트에서 Google Identity Services로 받은 ID 토큰을 그대로 넘기면 됩니다.
+
+**요청**
+```json
+{ "id_token": "eyJhbGci...", "skill_tier": "beginner" }
+```
+- `id_token`: 구글이 발급한 ID 토큰 (필수)
+- `skill_tier`: **해당 구글 계정으로 처음 가입하는 경우에만 필수**. 이미 가입된 계정이면 무시됨.
+
+**응답 200**: `/auth/signup`과 동일한 형태 (`access_token`, `user`)
+
+**에러**: 400(처음 가입인데 `skill_tier` 없음 / 구글 계정에 이메일 없음), 401(유효하지 않은 토큰), 500(서버에 `GOOGLE_CLIENT_ID` 미설정)
+
+프론트 구현 시 필요한 것: `.env`에 `VITE_GOOGLE_CLIENT_ID` 추가, Google Identity Services 스크립트로 로그인 버튼 렌더링 → 콜백으로 받은 `credential` 값을 `id_token`으로 이 엔드포인트에 전달.
+
 ---
 
 ## 주제(Topics)

@@ -36,7 +36,8 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    password_hash = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)  # null for Google-only accounts
+    google_sub = Column(String, unique=True, index=True, nullable=True)
     nickname = Column(String, nullable=False)
     skill_tier = Column(SQLEnum(SkillTier), nullable=False)
     created_at = Column(DateTime, default=dt.datetime.utcnow)

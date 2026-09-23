@@ -1,4 +1,5 @@
 import datetime as dt
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
@@ -16,6 +17,13 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str
+    # Only required the first time (i.e. this Google account has no
+    # existing user yet) — ignored on subsequent logins.
+    skill_tier: Optional[SkillTier] = None
 
 
 class UserOut(BaseModel):
