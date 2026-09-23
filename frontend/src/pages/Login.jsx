@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import GoogleLoginButton from "../components/GoogleLoginButton";
+import { errorMessage } from "../api/client";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -18,9 +20,23 @@ export default function Login() {
       await login(email, password);
       navigate("/");
     } catch (err) {
-      setError(err.response?.data?.detail || "로그인에 실패했습니다");
+      setError(errorMessage(err, "로그인에 실패했습니다"));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleGoogleCredential(idToken) {
+    setError("");
+    try {
+      await loginWithGoogle(idToken, undefined);
+      navigate("/");
+    } catch (err) {
+      if (err.response?.status === 400) {
+        setError("처음 사용하는 구글 계정이에요. 회원가입 페이지에서 실력 등급을 선택하고 진행해주세요.");
+      } else {
+        setError(errorMessage(err, "구글 로그인에 실패했습니다"));
+      }
     }
   }
 
@@ -41,6 +57,10 @@ export default function Login() {
           {submitting ? "로그인 중..." : "로그인"}
         </button>
       </form>
+
+      <div className="divider">또는</div>
+      <GoogleLoginButton onCredential={handleGoogleCredential} />
+
       <p>
         계정이 없으신가요? <Link to="/signup">회원가입</Link>
       </p>

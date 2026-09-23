@@ -25,8 +25,13 @@ export function AuthProvider({ children }) {
     setUser(null);
   }
 
-  async function signup(email, password, nickname) {
-    const { data } = await client.post("/auth/signup", { email, password, nickname });
+  async function signup(email, password, nickname, skillTier) {
+    const { data } = await client.post("/auth/signup", {
+      email,
+      password,
+      nickname,
+      skill_tier: skillTier,
+    });
     loginWithToken(data.access_token, data.user);
   }
 
@@ -35,8 +40,16 @@ export function AuthProvider({ children }) {
     loginWithToken(data.access_token, data.user);
   }
 
+  async function loginWithGoogle(idToken, skillTier) {
+    const { data } = await client.post("/auth/google", {
+      id_token: idToken,
+      skill_tier: skillTier,
+    });
+    loginWithToken(data.access_token, data.user);
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, signup, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, signup, login, loginWithGoogle, logout }}>
       {children}
     </AuthContext.Provider>
   );

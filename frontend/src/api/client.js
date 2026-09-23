@@ -18,4 +18,14 @@ export function toImageUrl(relativePath) {
   return `${API_BASE_URL}${relativePath}`;
 }
 
+// FastAPI's `detail` is a string for most errors, but a list of
+// {type, loc, msg, ...} objects for 422 validation errors — rendering
+// that list directly as a React child crashes the page.
+export function errorMessage(err, fallback) {
+  const detail = err.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((d) => d.msg || JSON.stringify(d)).join(", ");
+  return fallback;
+}
+
 export default client;

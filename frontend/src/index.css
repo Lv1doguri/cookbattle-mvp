@@ -73,6 +73,48 @@ a {
   margin: 24px 0;
 }
 
+.tier-select {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.tier-select label {
+  border: 1px solid #e0d5c8;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  background: white;
+}
+
+.tier-select input {
+  margin-right: 4px;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: #a99b8c;
+  margin: 4px 0 0;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #a99b8c;
+  font-size: 0.85rem;
+  margin: 20px 0;
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #e0d5c8;
+}
+
 .page {
   max-width: 720px;
   margin: 0 auto;
