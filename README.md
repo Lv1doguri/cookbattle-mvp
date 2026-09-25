@@ -21,11 +21,13 @@ cookbattle/
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m app.seed          # 오늘 날짜 주제 4개 시드 (최초 1회, 이미 있으면 건너뜀)
+cp .env.example .env        # 선택. 없어도 개발용 기본값으로 뜹니다
 uvicorn app.main:app --reload --port 8000
 ```
 - API 문서(Swagger): http://localhost:8000/docs — 프론트팀이 실제 요청/응답을 직접 눌러볼 수 있습니다.
-- DB는 SQLite 파일(`backend/cookbattle.db`)이라 별도 서버 설치가 필요 없습니다.
+- DB는 SQLite 파일(`backend/cookbattle.db`)이라 별도 서버 설치가 필요 없고, 테이블과 상점 상품은 첫 실행 때 자동으로 만들어집니다. 스키마가 바뀌었을 땐 `cookbattle.db`를 지우고 다시 켜세요.
+- Windows에서는 venv 활성화가 `.venv\Scripts\activate` 입니다.
+- 테스트: `pip install -r requirements-dev.txt` 후 `python -m pytest`
 
 ### 프론트엔드
 ```bash
@@ -36,20 +38,23 @@ npm run dev
 ```
 - http://localhost:5173 에서 확인. 백엔드가 먼저 떠 있어야 정상 동작합니다.
 
-## 지금 되는 것 (Must Have)
+## 백엔드가 지금 되는 것 (COOKUP 디자인 15화면 기준)
 
-- 회원가입/로그인 (JWT)
-- 오늘의 주제 목록 조회
-- 주제별 요리 사진 업로드 (1인 1일 1주제 1장 제한)
-- 참가자 간 투표 (본인 사진 투표 불가, 주제당 1표 제한)
-- 마감 후 득표 기준 우승자 집계 (동점 시 먼저 제출한 사람 우선)
+- 회원가입/로그인(JWT), 요리 실력(초급/중급/고급) 선택
+- 카메라 인증 사진 업로드 → 레시피 포함 게시물 (재료·조리방법·비용·시간·난이도)
+- 홈 피드(추천/팔로잉), 좋아요·저장·댓글·답글, 팔로우, 프로필
+- 실력 단계별 오늘의 대결 · 리더보드 · XP/레벨/코인 지급
+- 레시피 검색·필터·우승 레시피·평점
+- 상점 · 코인으로 쿠폰 구매 · 내 쿠폰 · 쿠폰 사용
+
+화면별 호출 API와 게임 규칙은 `API_CONTRACT.md`에 있습니다.
 
 ## 다음 회의에서 정할 것 (TBD)
 
-- 오픈 시 노출할 실제 주제 N개 목록 (`backend/app/seed.py`의 `SAMPLE_TOPICS` 수정)
-- 주제 마감 시점을 어떻게 정할지 (현재는 `is_closed` 플래그를 수동/배치로 바꾸는 구조만 있고 자동 마감 로직은 없음 — Should Have 단계에서 크론이나 스케줄러 추가 필요)
-- 우승자 베네핏(포인트/뱃지) 구체적 정책 — 현재 API 계약에는 없음, Should Have 범위
-- 결과 공유 카드 이미지 생성 방식 — Should Have 범위
+- 요일별 대결 주제와 단계별 문구 (`backend/app/content.py`의 `WEEKLY_THEMES`, 지금 문구는 임시)
+- 보상 수치: 일반 게시 XP/코인, 하루 보상 한도, 대결 보상, 레벨당 필요 XP (`backend/app/content.py`)
+- 실제 기프티콘 발급 연동 방식 (지금 쿠폰 번호는 앱에서 만든 임의 번호)
+- `API_CONTRACT.md` 맨 아래 "디자인에서 정해지지 않아 백엔드가 가정한 것" 7가지
 
 ## Git 협업 팁
 
