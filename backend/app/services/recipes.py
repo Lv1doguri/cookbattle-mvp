@@ -33,6 +33,7 @@ def build_cards(db: Session, recipes: Sequence[Recipe], viewer: User) -> List[Re
             photo_url=image_url(r.photo_filename),
             saves=r.save_count,
             is_saved=r.id in saved,
+            is_essential=r.is_essential,
         )
         for r in recipes
     ]
@@ -83,6 +84,7 @@ def apply_filters(
     times: Optional[Sequence[CookTime]],
     difficulties: Optional[Sequence[Tier]],
     tools: Optional[Sequence[Tool]],
+    essential: Optional[bool] = None,
 ) -> Select:
     """Different filter groups are ANDed; several picks inside one group are ORed."""
     term = (q or "").strip()
@@ -104,4 +106,6 @@ def apply_filters(
         stmt = stmt.where(Recipe.difficulty.in_(difficulties))
     if tools:
         stmt = stmt.where(Recipe.id.in_(select(RecipeTool.recipe_id).where(RecipeTool.tool.in_(tools))))
+    if essential:
+        stmt = stmt.where(Recipe.is_essential.is_(True))
     return stmt

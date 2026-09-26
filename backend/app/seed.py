@@ -4,7 +4,7 @@ import secrets
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .content import OFFICIAL_EMAIL, OFFICIAL_NICKNAME, RECIPE_SEED, SHOP_SEED
+from .content import ESSENTIAL_RECIPES, OFFICIAL_EMAIL, OFFICIAL_NICKNAME, RECIPE_SEED, SHOP_SEED
 from .enums import Tier
 from .models import Ingredient, Recipe, RecipeTool, ShopItem, Step, User
 from .security import hash_password
@@ -47,6 +47,7 @@ def _seed_recipes(db: Session) -> None:
             cook_minutes=minutes,
             difficulty=difficulty,
             win_label=win_label,
+            is_essential=title in ESSENTIAL_RECIPES,
         )
         recipe.ingredients = [Ingredient(position=i, name=n, amount=a) for i, (n, a) in enumerate(ingredients)]
         recipe.steps = [Step(position=i + 1, text=t) for i, t in enumerate(steps)]

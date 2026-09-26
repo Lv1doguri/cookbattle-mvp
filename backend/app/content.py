@@ -20,6 +20,12 @@ MIN_PARTICIPANTS = 3  # fewer than this and the battle is void (no ranking, no r
 # "이번 달 요리 N회" x this = "절약한 식비". 4,000 is what the design mock implies (8회 -> 32,000원).
 SAVING_PER_COOKING_KRW = 4000
 
+# ---- in-app camera photos -------------------------------------------------
+# The photo is uploaded the moment it's taken; the server stamps captured_at. It must be attached
+# to a battle entry within this window, and can be used only once (so old photos can't be recycled).
+PHOTO_TTL = dt.timedelta(hours=1)
+MAX_UPLOADS_PER_HOUR = 30
+
 # ---- weekly group battles -------------------------------------------------
 # A battle runs Monday 00:00 KST -> next Monday 00:00 KST, one per skill group.
 BATTLE_EPOCH = dt.date(2026, 8, 31)  # a Monday; week 0 uses BATTLE_THEMES[0]
@@ -88,12 +94,15 @@ SHOP_SEED = [
 OFFICIAL_NICKNAME = "요리왕"
 OFFICIAL_EMAIL = "official@cookup.invalid"
 
+# Recipes shown under the "자취 필수" quick filter. Curated by hand; battle winners' recipes aren't essential by default.
+ESSENTIAL_RECIPES = {"김치볶음밥", "참치마요 덮밥", "비빔국수"}
+
 # (title, category, cost_krw, minutes, difficulty, win_label, tools, ingredients[(name, amount)], steps[])
 RECIPE_SEED = [
     (
         "김치볶음밥", Category.rice, 3500, 15, Tier.beginner, "밥 요리 대결 1등", [Tool.pan],
-        [("김치", "1컵"), ("밥", "1공기"), ("계란", "1개"), ("대파", "약간"), ("식용유", "1큰술")],
-        ["김치를 잘게 썬다.", "팬에 기름을 두르고 김치와 대파를 볶는다.", "밥을 넣고 고루 볶는다.", "계란 프라이를 올려 완성한다."],
+        [("김치", "1컵"), ("밥", "1공기"), ("계란", "1개"), ("식용유", "1큰술")],
+        ["김치를 잘게 썬다.", "팬에 기름을 두르고 김치를 볶는다.", "밥을 넣고 고루 볶는다."],
     ),
     (
         "참치마요 덮밥", Category.rice, 2800, 10, Tier.beginner, "5천원 이하 대결 1등", [],

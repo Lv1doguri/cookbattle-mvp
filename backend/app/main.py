@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .errors import install_error_handlers
-from .routers import auth, battles, me, recipes, shop
+from .routers import auth, battles, me, photos, recipes, shop
 from .seed import seed_all
 
 os.makedirs(settings.upload_dir, exist_ok=True)
@@ -45,7 +45,7 @@ app.add_middleware(
 
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 
-for r in (auth.router, me.router, recipes.router, battles.router, shop.router):
+for r in (auth.router, me.router, photos.router, recipes.router, battles.router, shop.router):
     app.include_router(r)
 
 

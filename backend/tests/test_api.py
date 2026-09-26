@@ -7,7 +7,7 @@ from app.services.battles import get_or_create_battle, week_label
 from app.services.points import level_for
 from sqlalchemy import func, select
 
-from .conftest import PASSWORD, PNG, current_battle, group, join, kst_at, set_user, signup
+from .conftest import PASSWORD, PNG, camera_photo, current_battle, group, join, kst_at, set_user, signup
 
 
 def _iso(s: str) -> dt.datetime:
@@ -155,6 +155,98 @@ def test_avatar_upload(client):
     assert second != first and client.get(second).status_code == 200 and client.get(first).status_code == 404
 
 
+def test_signup_without_email_then_login_by_nickname(client):
+    """The signup screen has no email field, so email is optional and the nickname doubles as the login id."""
+    r = client.post("/auth/signup", json={"nickname": "자취생", "password": PASSWORD, "tier": "beginner"})
+    assert r.status_code == 201 and r.json()["user"]["email"] is None
+    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    assert client.post("/auth/signup", json={"nickname": "또다른", "password": PASSWORD, "tier": "beginner"}).status_code == 201
+
+    assert client.post("/auth/login", json={"email": "자취생", "password": PASSWORD}).status_code == 200
+    assert client.post("/auth/login", json={"email": "  자취생 ", "password": PASSWORD}).status_code == 200
+    assert client.post("/auth/login", json={"email": "자취생", "password": "wrong-password"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "없는사람", "password": PASSWORD}).status_code == 401
+
+    added = client.patch("/me", json={"email": "You@University.ac.kr"}, headers=headers).json()
+    assert added["email"] == "you@university.ac.kr"
+    assert client.post("/auth/login", json={"email": "YOU@university.ac.kr", "password": PASSWORD}).status_code == 200
+    dup = client.post(
+        "/auth/signup", json={"email": "you@university.ac.kr", "nickname": "복사본", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert dup.status_code == 409 and dup.json()["code"] == "email_taken"
+    bad_email = client.post(
+        "/auth/signup", json={"email": "not-an-email", "nickname": "복사본", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert bad_email.status_code == 422
+
+
+def test_login_is_throttled_after_repeated_failures(client, freeze):
+    signup(client, "a@test.com", nickname="Yuri")
+    wrong = {"email": "yuri", "password": "wrong-password"}
+    for _ in range(10):
+        assert client.post("/auth/login", json=wrong).status_code == 401
+    blocked = client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD})  # even the right password
+    assert blocked.status_code == 429 and blocked.json()["code"] == "too_many_attempts"
+    assert client.post("/auth/login", json={"email": "someone-else", "password": PASSWORD}).status_code == 401  # not blocked
+
+    freeze(kst_at(0, 2, 12))  # the 10-minute window has long passed
+    assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
+
+
+def test_successful_login_clears_the_failure_count(client):
+    signup(client, "a@test.com", nickname="Yuri")
+    for _ in range(9):
+        client.post("/auth/login", json={"email": "Yuri", "password": "wrong-password"})
+    assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
+    for _ in range(9):
+        assert client.post("/auth/login", json={"email": "Yuri", "password": "wrong-password"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
+
+
+# ------------------------------------------------------------------ camera photos
+def test_camera_photo_rules(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    b, _ = signup(client, "b@test.com", tier="intermediate")
+    assert client.post("/photos", files={"file": ("x.png", PNG, "image/png")}).status_code == 401
+    bad = client.post("/photos", files={"file": ("x.png", b"not an image", "image/png")}, headers=a)
+    assert bad.status_code == 400 and bad.json()["code"] == "unsupported_image"
+    too_big = client.post("/photos", files={"file": ("x.png", PNG + b"0" * (8 * 1024 * 1024), "image/png")}, headers=a)
+    assert too_big.status_code == 413 and too_big.json()["code"] == "file_too_large"
+
+    shot = camera_photo(client, a)
+    assert shot["photo_url"].startswith("/uploads/") and client.get(shot["photo_url"]).status_code == 200
+    assert _iso(shot["captured_at"]) == kst_at(0, 2, 12) and _iso(shot["expires_at"]) == kst_at(0, 2, 13)
+
+    battle_id = current_battle(client, a)["id"]
+    stolen = join(client, b, battle_id, photo_id=shot["photo_id"])  # someone else's photo
+    assert stolen.status_code == 404 and stolen.json()["code"] == "photo_not_found"
+    ok = join(client, a, battle_id, photo_id=shot["photo_id"])
+    assert ok.status_code == 201 and ok.json()["entry"]["photo_url"] == shot["photo_url"]
+
+    freeze(kst_at(1, 1, 12))  # next week's battle: the used photo can't be recycled
+    next_battle = current_battle(client, a)["id"]
+    reuse = join(client, a, next_battle, photo_id=shot["photo_id"])
+    assert reuse.status_code == 409 and reuse.json()["code"] == "photo_already_used"
+
+    stale = camera_photo(client, a)
+    freeze(kst_at(1, 1, 14))  # two hours later: too old to submit
+    expired = join(client, a, next_battle, photo_id=stale["photo_id"])
+    assert expired.status_code == 400 and expired.json()["code"] == "photo_expired"
+
+    camera_photo(client, a)  # the next upload sweeps this user's expired, unused photos
+    assert client.get(stale["photo_url"]).status_code == 404
+    assert client.get(shot["photo_url"]).status_code == 200  # the one backing an entry stays
+
+
+def test_camera_upload_rate_limit(client):
+    a, _ = signup(client, "a@test.com")
+    for _ in range(30):
+        camera_photo(client, a)
+    limited = client.post("/photos", files={"file": ("x.png", PNG, "image/png")}, headers=a)
+    assert limited.status_code == 429 and limited.json()["code"] == "too_many_uploads"
+
+
 # ------------------------------------------------------------------ battles: setup
 def test_weekly_battle_schedule(client):
     with SessionLocal() as db:
@@ -187,14 +279,13 @@ def test_current_battle_and_joining(client, freeze):
     wrong = join(client, beginner, view["id"])
     assert wrong.status_code == 403 and wrong.json()["code"] == "wrong_group" and "초급" in wrong.json()["detail"]
 
-    no_photo = client.post(f"/battles/{view['id']}/entries", data={"dish_name": "요리"}, headers=inter)
+    no_photo = client.post(f"/battles/{view['id']}/entries", json={"dish_name": "요리"}, headers=inter)
     assert no_photo.status_code == 422
-    not_image = client.post(
-        f"/battles/{view['id']}/entries", data={"dish_name": "요리"}, files={"photo": ("a.png", b"nope", "image/png")}, headers=inter
-    )
-    assert not_image.status_code == 400 and not_image.json()["code"] == "unsupported_image"
+    unknown_photo = join(client, inter, view["id"], photo_id=999)
+    assert unknown_photo.status_code == 404 and unknown_photo.json()["code"] == "photo_not_found"
     blank = join(client, inter, view["id"], dish="   ")
     assert blank.status_code == 422
+    assert client.get("/me", headers=inter).json()["progress"]["points"] == 0  # none of the failures paid anything
 
     joined = join(client, inter, view["id"], dish="치즈 스크램블 에그", description="치즈는 마지막에!")
     assert joined.status_code == 201
@@ -375,8 +466,11 @@ def test_seeded_recipes_and_filters(client):
     assert card == {
         "id": card["id"], "name": "크림 파스타", "category": "pasta", "category_label": "파스타", "price": 4500,
         "minutes": 20, "difficulty": "intermediate", "difficulty_label": "중급", "win_label": "면 요리 대결 1등",
-        "photo_url": None, "saves": 0, "is_saved": False,
+        "photo_url": None, "saves": 0, "is_saved": False, "is_essential": False,
     }
+    assert names(essential="true") == (3, ["김치볶음밥", "비빔국수", "참치마요 덮밥"])  # "자취 필수" chip
+    assert names(essential="true", time="le_10") == (1, ["참치마요 덮밥"])
+    assert names(essential="false")[0] == 8  # only `true` narrows the list
     assert client.get("/recipes", params={"category": "sushi"}, headers=a).status_code == 422
 
     saved_id = client.get("/recipes", params={"q": "비빔국수"}, headers=a).json()["items"][0]["id"]
@@ -395,7 +489,8 @@ def test_recipe_detail_save_recent_and_reviews(client):
     assert (detail["name"], detail["price"], detail["minutes"], detail["difficulty_label"]) == ("김치볶음밥", 3500, 15, "초급")
     assert detail["author"]["nickname"] == "요리왕" and detail["win_label"] == "밥 요리 대결 1등"
     assert [(i["name"], i["amount"]) for i in detail["ingredients"]][:2] == [("김치", "1컵"), ("밥", "1공기")]
-    assert [s["order"] for s in detail["steps"]] == [1, 2, 3, 4] and detail["steps"][3]["text"] == "계란 프라이를 올려 완성한다."
+    assert [s["order"] for s in detail["steps"]] == [1, 2, 3] and detail["steps"][2]["text"] == "밥을 넣고 고루 볶는다."
+    assert [i["name"] for i in detail["ingredients"]] == ["김치", "밥", "계란", "식용유"] and detail["is_essential"] is True
     assert detail["tools"] == [{"code": "pan", "label": "프라이팬 하나"}]
     assert detail["is_saved"] is False and detail["saves"] == 0 and detail["comment_count"] == 0
     assert client.get("/recipes/999", headers=a).status_code == 404

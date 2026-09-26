@@ -14,6 +14,7 @@ from app import clock  # noqa: E402
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import User  # noqa: E402
+from app.services import throttle  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 PASSWORD = "cookup123"
@@ -21,6 +22,7 @@ PASSWORD = "cookup123"
 
 @pytest.fixture
 def client():
+    throttle.reset_all()
     Base.metadata.drop_all(engine)
     with TestClient(app) as c:  # entering the context runs the lifespan: create tables + seed content
         yield c
@@ -66,11 +68,20 @@ def current_battle(client, headers, tier=None):
     return r.json()
 
 
-def join(client, headers, battle_id, dish="치즈 스크램블 에그", description="우유를 조금 넣었어요"):
+def camera_photo(client, headers):
+    """What the camera screen does right after the shot: upload it, get photo_id back."""
+    r = client.post("/photos", files={"file": ("shot.png", PNG, "image/png")}, headers=headers)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def join(client, headers, battle_id, dish="치즈 스크램블 에그", description="우유를 조금 넣었어요", photo_id=None):
+    """Take a fresh photo (unless one is given) and submit it to the battle."""
+    if photo_id is None:
+        photo_id = camera_photo(client, headers)["photo_id"]
     return client.post(
         f"/battles/{battle_id}/entries",
-        data={"dish_name": dish, "description": description},
-        files={"photo": ("dish.png", PNG, "image/png")},
+        json={"photo_id": photo_id, "dish_name": dish, "description": description},
         headers=headers,
     )
 

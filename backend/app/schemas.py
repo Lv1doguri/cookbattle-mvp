@@ -17,7 +17,7 @@ def _check_password_bytes(v: str) -> str:
 
 # ------------------------------------------------------------------ auth / me
 class SignupIn(BaseModel):
-    email: EmailStr
+    email: Optional[EmailStr] = None  # 회원가입 화면에 이메일 칸이 없어서 선택. 나중에 정보 수정에서 추가 가능
     nickname: Nickname
     password: str = Field(min_length=8, max_length=72)
     tier: Tier
@@ -29,7 +29,8 @@ class SignupIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    # 이메일을 넣으세요. 이메일 없이 가입한 계정은 같은 칸에 닉네임을 넣으면 돼요('@'가 있으면 이메일로 봐요).
+    email: str = Field(min_length=1, max_length=255)
     password: str = Field(max_length=200)
 
 
@@ -69,7 +70,7 @@ class UserBrief(BaseModel):
 
 
 class MeOut(UserBrief):
-    email: str
+    email: Optional[str]
     tier: Tier
     tier_label: str
     pending_tier: Optional[Tier]  # 실력을 바꿨다면 "다음 대결부터" 적용될 값
@@ -151,6 +152,7 @@ class RecipeCard(BaseModel):
     photo_url: Optional[str]
     saves: int
     is_saved: bool
+    is_essential: bool  # "자취 필수"
 
 
 class ToolOut(BaseModel):
@@ -207,6 +209,19 @@ class ReviewPage(BaseModel):
 
 
 # ------------------------------------------------------------------ battles
+class PhotoOut(BaseModel):
+    photo_id: int
+    photo_url: str
+    captured_at: dt.datetime  # 서버가 찍은 촬영(업로드) 시각
+    expires_at: dt.datetime  # 이 시각까지 [제출]해야 해요. 지나면 다시 촬영
+
+
+class JoinIn(BaseModel):
+    photo_id: int
+    dish_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
+    description: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+
+
 class EntryOut(BaseModel):
     id: int
     battle_id: int

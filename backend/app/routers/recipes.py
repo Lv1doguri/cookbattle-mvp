@@ -33,6 +33,7 @@ def list_recipes(
     time: Optional[List[CookTime]] = Query(None, description="le_10 · le_15 · le_30 · ge_60"),
     difficulty: Optional[List[Tier]] = Query(None),
     tool: Optional[List[Tool]] = Query(None),
+    essential: Optional[bool] = Query(None, description="true = '자취 필수' 칩"),
     sort: Literal["latest", "popular"] = Query("latest", description="popular = 저장 수 많은 순"),
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
@@ -43,9 +44,11 @@ def list_recipes(
 
     필터 화면의 "레시피 N개 보기"는 같은 파라미터에 limit=1로 부르고 응답의 `total`을 쓰세요.
     빠른 필터 칩: 5천원 이하=budget=under_5000 · 15분 이내=time=le_15 · 초급=difficulty=beginner ·
-    건강식=category=healthy · 디저트=category=dessert.
+    자취 필수=essential=true.
     """
-    filters = dict(q=q, categories=category, budgets=budget, times=time, difficulties=difficulty, tools=tool)
+    filters = dict(
+        q=q, categories=category, budgets=budget, times=time, difficulties=difficulty, tools=tool, essential=essential
+    )
     total = db.scalar(select(func.count()).select_from(apply_filters(select(Recipe.id), **filters).subquery())) or 0
     stmt = apply_filters(recipe_query(), **filters)
     if sort == "popular":

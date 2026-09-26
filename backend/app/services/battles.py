@@ -118,7 +118,7 @@ def entry_out(entry: Entry, state: str) -> EntryOut:
         battle_id=entry.battle_id,
         dish_name=entry.dish_name,
         description=entry.description,
-        photo_url=image_url(entry.photo_filename),
+        photo_url=image_url(entry.photo.filename),
         author=user_brief(entry.user),
         vote_count=entry.vote_count,
         created_at=entry.created_at,

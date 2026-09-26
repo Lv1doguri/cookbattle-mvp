@@ -63,7 +63,8 @@ class User(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # 회원가입 화면에 이메일 칸이 없어서 선택값이에요. 없는 계정은 닉네임으로 로그인하고, 정보 수정에서 이메일을 추가할 수 있어요.
+    email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(100))
     nickname: Mapped[str] = mapped_column(String(16))
     avatar_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -80,6 +81,17 @@ class User(Base):
 
 # Nicknames are unique ignoring case ("Yuri" == "yuri").
 Index("uq_users_nickname_lower", func.lower(User.nickname), unique=True)
+
+
+class Photo(Base):
+    """A photo taken with the in-app camera. captured_at is stamped by the server at upload."""
+
+    __tablename__ = "photos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(64), unique=True)
+    captured_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
 
 
 class Battle(Base):
@@ -109,9 +121,9 @@ class Entry(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     battle_id: Mapped[int] = mapped_column(ForeignKey("battles.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id"), unique=True)  # a photo backs one entry only
     dish_name: Mapped[str] = mapped_column(String(60))
     description: Mapped[str] = mapped_column(String(500), default="")
-    photo_filename: Mapped[str] = mapped_column(String(64))
     vote_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
@@ -123,6 +135,7 @@ class Entry(Base):
 
     user: Mapped["User"] = relationship()
     battle: Mapped["Battle"] = relationship()
+    photo: Mapped["Photo"] = relationship()
 
 
 class Vote(Base):
@@ -150,6 +163,7 @@ class Recipe(Base):
     difficulty: Mapped[Tier] = mapped_column(_enum(Tier))
     win_label: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)  # "밥 요리 대결 1등"
     photo_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    is_essential: Mapped[bool] = mapped_column(Boolean, default=False, index=True)  # "자취 필수" 칩
 
     save_count: Mapped[int] = mapped_column(Integer, default=0)
     comment_count: Mapped[int] = mapped_column(Integer, default=0)

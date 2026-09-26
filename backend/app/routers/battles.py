@@ -1,20 +1,21 @@
 import math
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .. import clock
-from ..content import PARTICIPATION_POINTS
+from ..content import PARTICIPATION_POINTS, PHOTO_TTL
 from ..database import get_db
 from ..enums import TIER_LABEL, Tier
 from ..errors import ApiError
-from ..models import Battle, Entry, Ingredient, Recipe, RecipeTool, Step, User, Vote
+from ..models import Battle, Entry, Ingredient, Photo, Recipe, RecipeTool, Step, User, Vote
 from ..schemas import (
     BattleOut,
     EntryListOut,
+    JoinIn,
     JoinOut,
     LastResultOut,
     RecipeCreateIn,
@@ -36,7 +37,6 @@ from ..services.battles import (
     ranked_entries,
     week_label,
 )
-from ..services.images import delete_image, read_image, write_image
 from ..services.points import grant_points
 from ..services.recipes import build_detail, recipe_query
 
@@ -54,7 +54,9 @@ def _get_battle(db: Session, battle_id: int) -> Battle:
 
 def _my_entry(db: Session, battle_id: int, user_id: int) -> Optional[Entry]:
     return db.scalar(
-        select(Entry).options(joinedload(Entry.user)).where(Entry.battle_id == battle_id, Entry.user_id == user_id)
+        select(Entry)
+        .options(joinedload(Entry.user), joinedload(Entry.photo))
+        .where(Entry.battle_id == battle_id, Entry.user_id == user_id)
     )
 
 
@@ -126,7 +128,7 @@ def list_entries(battle_id: int, user: User = Depends(get_current_user), db: Ses
 
     entries = db.scalars(
         select(Entry)
-        .options(joinedload(Entry.user))
+        .options(joinedload(Entry.user), joinedload(Entry.photo))
         .where(Entry.battle_id == battle_id)
         .order_by(Entry.created_at.asc(), Entry.id.asc())
     ).all()
@@ -150,20 +152,15 @@ def list_entries(battle_id: int, user: User = Depends(get_current_user), db: Ses
 @router.post("/battles/{battle_id}/entries", response_model=JoinOut, status_code=201)
 def join_battle(
     battle_id: int,
-    dish_name: str = Form(..., max_length=60, description="요리명"),
-    description: str = Form("", max_length=500, description="설명"),
-    photo: UploadFile = File(..., description="요리 사진 (필수)"),
+    body: JoinIn,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """요리 인증 화면의 [제출]. multipart/form-data. 참가하면 +1P."""
+    """요리 인증 화면의 [제출]. 먼저 `POST /photos`로 받은 photo_id를 함께 보내요. 참가하면 +1P."""
     now = clock.utcnow()
     finalize_due_battles(db, now)
     battle = _get_battle(db, battle_id)
 
-    dish_name = dish_name.strip()
-    if not dish_name:
-        raise ApiError(422, "validation_error", "요리명을 입력해주세요")
     if battle.tier != user.tier:
         raise ApiError(403, "wrong_group", f"내 그룹({TIER_LABEL[user.tier]}) 대결에만 참가할 수 있어요")
     if not is_open(battle, now):
@@ -171,22 +168,27 @@ def join_battle(
     if _my_entry(db, battle.id, user.id) is not None:
         raise ApiError(409, "already_entered", "한 대결에는 한 번만 참가할 수 있어요")
 
-    data, ext = read_image(photo)
-    filename = write_image(data, ext)
+    photo = db.get(Photo, body.photo_id)
+    if photo is None or photo.user_id != user.id:
+        raise ApiError(404, "photo_not_found", "촬영한 사진을 찾을 수 없어요. 다시 촬영해주세요")
+    if db.scalar(select(Entry.id).where(Entry.photo_id == photo.id)) is not None:
+        raise ApiError(409, "photo_already_used", "이미 제출한 사진이에요. 다시 촬영해주세요")
+    if now > photo.captured_at + PHOTO_TTL:
+        raise ApiError(400, "photo_expired", "촬영한 지 너무 오래됐어요. 다시 촬영해주세요")
+
     entry = Entry(
         battle_id=battle.id,
         user_id=user.id,
-        dish_name=dish_name,
-        description=description.strip(),
-        photo_filename=filename,
+        photo_id=photo.id,
+        dish_name=body.dish_name,
+        description=body.description,
         created_at=now,
     )
     db.add(entry)
     try:
         db.flush()
-    except IntegrityError:  # double tap: the other request already entered
+    except IntegrityError:  # double tap: the other request already entered / used this photo
         db.rollback()
-        delete_image(filename)
         raise ApiError(409, "already_entered", "한 대결에는 한 번만 참가할 수 있어요")
 
     grant_points(db, user, PARTICIPATION_POINTS, reason="participation", ref_type="entry", ref_id=entry.id)
@@ -296,7 +298,7 @@ def share_recipe(
     """1등이 자기 레시피를 레시피 탭에 공유. (디자인에 입력 화면이 없어서 필드는 레시피 상세 기준으로 잡았어요)"""
     now = clock.utcnow()
     finalize_due_battles(db, now)
-    entry = db.scalar(select(Entry).options(joinedload(Entry.battle)).where(Entry.id == entry_id))
+    entry = db.scalar(select(Entry).options(joinedload(Entry.battle), joinedload(Entry.photo)).where(Entry.id == entry_id))
     if entry is None:
         raise ApiError(404, "entry_not_found", "출품작을 찾을 수 없습니다")
     if entry.user_id != user.id:
@@ -316,7 +318,7 @@ def share_recipe(
         cook_minutes=body.minutes,
         difficulty=body.difficulty,
         win_label=f"{battle_title(battle.theme)} 1등",
-        photo_filename=entry.photo_filename,
+        photo_filename=entry.photo.filename,
         created_at=now,
     )
     recipe.ingredients = [Ingredient(position=i, name=x.name, amount=x.amount) for i, x in enumerate(body.ingredients)]
