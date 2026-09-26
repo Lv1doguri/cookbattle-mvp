@@ -5,3 +5,7 @@ cookbattle.db
 .env
 uploads/*
 !uploads/.gitkeep
+.jwt_secret
+cookbattle.db-wal
+cookbattle.db-shm
+*.db
