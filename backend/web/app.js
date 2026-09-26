@@ -246,7 +246,7 @@ routes.at(-1).render.after = () => {
 
 const TUTORIAL = [
   ["🧭", "하단 탭으로 이동해요", "레시피 · 대결 · 홈 · 상점 · 메뉴를 오갈 수 있어요."],
-  ["🏆", "매주 요리 대결", "5일 동안 요리해서 사진을 올리고, 마지막 2일은 참가자끼리 투표해요. 참가만 해도 +1P!"],
+  ["🏆", "매일 요리 대결", "하루 요리해서 사진을 올리고, 다음 하루는 참가자끼리 투표해요. 참가만 해도 +10P!"],
   ["📷", "여러 구도로 인증", "완성샷·키워드 인증샷과 랜덤 구도 1장을 찍어요. 같은 사진은 올릴 수 없어요."],
   ["🎁", "포인트로 기프티콘", "순위 포인트로 레벨을 올리고, 상점에서 기프티콘으로 바꿔요."],
 ];
@@ -546,7 +546,7 @@ route("/battle", async () => {
   const tabs = active.map((x) => `<button class="chip ${x.group === b.group ? "on" : ""}" data-act="battleTab" data-g="${x.group}">
     ${x.kind === "fail" ? "😵 망한 요리" : esc(x.group_label) + "급"}${x.group === u.skill ? " · 내 그룹" : ""}</button>`).join("");
   let action;
-  if (b.can_submit) action = `<button class="btn" data-act="go" data-to="/join/${b.id}">참가하기 <span class="badge gold">+1P</span></button>`;
+  if (b.can_submit) action = `<button class="btn" data-act="go" data-to="/join/${b.id}">참가하기 <span class="badge gold">+10P</span></button>`;
   else if (b.has_submitted && b.phase === "cooking") action = `<div class="banner info" style="background:rgba(255,255,255,.18);color:#fff">✅ 참가 완료! ${esc(b.vote_start_date.slice(5).replace("-", "/"))}부터 투표할 수 있어요</div>`;
   else if (!b.is_my_group && b.phase === "cooking") action = `<div class="banner" style="background:rgba(255,255,255,.18);color:#fff">다른 실력 그룹의 대결이에요 (구경만 할 수 있어요)</div>`;
   else action = "";
@@ -795,7 +795,7 @@ route("/shop", async () => {
         <button class="btn sm" ${it.can_exchange ? "" : "disabled"} data-act="shopSheet" data-id="${it.id}" data-name="${esc(it.name)}" data-price="${it.price}">교환</button></div>`).join("")
         || `<p class="small muted">상품이 없어요</p>`}
     </div>
-    <p class="hint center">포인트는 대결 참가(+1P)와 순위 보상으로 모여요 · 교환한 기프티콘은 추후 발송돼요 (MVP)</p>
+    <p class="hint center">포인트는 대결 참가(+10P)·투표(+2P)·순위 보상으로 모여요 · 교환한 기프티콘은 추후 발송돼요 (MVP)</p>
   </div>`;
 }, { tab: "shop" });
 actions.shopSheet = (el) => {

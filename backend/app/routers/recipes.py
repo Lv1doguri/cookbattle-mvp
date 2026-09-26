@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .. import rules
 from ..auth import get_current_user
 from ..database import get_db
-from ..models import Recipe, RecipeCompletion, RecipeReview, RecipeSave, RecipeView, Submission, User
+from ..models import PointLog, Recipe, RecipeCompletion, RecipeReview, RecipeSave, RecipeView, Submission, User
 from ..schemas import CommentCreate, RecipeCreate, RecipeList, RecipeOut, RecipeUpdate, ReviewOut
 from ..services import ratelimit
 from ..services.battle import is_winner
@@ -17,7 +17,7 @@ from ..services.points import award
 from ..services.recipes import RecipeFilter, recipe_fields, recipes_out, search, sort_results, split_csv
 from ..services.serializers import recipe_out, review_out
 from ..services.storage import delete_files, save_image
-from ..timeutil import utcnow
+from ..timeutil import day_start_utc, utcnow
 
 router = APIRouter(tags=["recipes"])
 
@@ -234,12 +234,22 @@ def recipe_reviews(recipe_id: int, db: Session = Depends(get_db), user: User = D
 @router.post("/recipes/{recipe_id}/reviews", response_model=ReviewOut)
 def add_review(recipe_id: int, payload: CommentCreate, db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
+    """후기 작성 → +1P (하루 최대 RECIPE_REVIEW_DAILY_CAP)."""
     _get(db, recipe_id)
     content = payload.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="내용을 입력해 주세요")
     rv = RecipeReview(recipe_id=recipe_id, user_id=user.id, content=content)
     db.add(rv)
+    db.flush()
+    earned_today = (
+        db.query(func.coalesce(func.sum(PointLog.points), 0))
+        .filter(PointLog.user_id == user.id, PointLog.reason == "review", PointLog.created_at >= day_start_utc())
+        .scalar()
+    )
+    pts = max(min(rules.RECIPE_REVIEW_POINTS, rules.RECIPE_REVIEW_DAILY_CAP - earned_today), 0)
+    if pts > 0:
+        award(db, user, pts, "review", f"review:{rv.id}", memo="레시피 후기 작성")
     db.commit()
     db.refresh(rv)
     return review_out(rv, user)

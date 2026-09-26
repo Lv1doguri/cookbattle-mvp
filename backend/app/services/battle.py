@@ -32,7 +32,7 @@ def kind_of(group: str) -> str:
 
 
 def start_battle(db: Session, group: str, category_id: Optional[int] = None) -> Battle:
-    """새 대결 시작 (1주일: 요리 COOKING_DAYS일 + 투표 나머지).
+    """새 대결 시작 (리그: 요리 1일+투표 1일 / 망한 요리 대회: 요리 3일+투표 1일).
     category_id가 없으면 같은 종류(리그/망한 요리) 주제 중 직전 것을 피해 랜덤 선택."""
     kind = kind_of(group)
     if category_id is not None:
@@ -53,13 +53,15 @@ def start_battle(db: Session, group: str, category_id: Optional[int] = None) -> 
         category = random.choice(candidates)
 
     start = today()
+    cooking_days = rules.cooking_days_for(kind)
+    duration_days = rules.duration_days_for(kind)
     battle = Battle(
         group=group,
         kind=kind,
         category_id=category.id,
         start_date=start,
-        vote_start_date=start + dt.timedelta(days=rules.COOKING_DAYS),
-        end_date=start + dt.timedelta(days=rules.BATTLE_DURATION_DAYS - 1),
+        vote_start_date=start + dt.timedelta(days=cooking_days),
+        end_date=start + dt.timedelta(days=duration_days - 1),
         verification_keyword=random.choice(rules.VERIFICATION_KEYWORDS),
     )
     db.add(battle)
@@ -172,7 +174,8 @@ def vote_counts(db: Session, battle_id: int) -> dict:
 
 def compute_rankings(db: Session, battle: Battle) -> list:
     """득표순, 동점이면 먼저 제출한 사람 우선. 숨김 작품 제외.
-    무효 대결이면 순위 포인트 없음."""
+    무효 대결이면 순위 포인트 없음. 참가자가 RANK_FULL_MIN_PARTICIPANTS 미만이면 순위 포인트 절반만
+    (계정 여러 개로 순위를 나눠 먹는 걸 막는 안전장치)."""
     subs = (
         db.query(Submission)
         .filter(Submission.battle_id == battle.id, Submission.is_hidden.is_(False))
@@ -182,10 +185,11 @@ def compute_rankings(db: Session, battle: Battle) -> list:
     entries = [RankedEntry(submission=s, votes=counts.get(s.id, 0)) for s in subs]
     entries.sort(key=lambda e: (-e.votes, e.submission.created_at, e.submission.id))
     table = rules.FAIL_RANK_POINTS if battle.kind == "fail" else rules.RANK_POINTS
+    half = len(entries) < rules.RANK_FULL_MIN_PARTICIPANTS
     for i, e in enumerate(entries):
         e.rank = i + 1
         if not battle.is_void and i < len(table) and e.votes > 0:
-            e.rank_points = table[i]
+            e.rank_points = table[i] // 2 if half else table[i]
     return entries
 
 

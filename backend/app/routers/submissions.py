@@ -140,6 +140,7 @@ def submit(
         level_before, total_before = user.level, user.total_points
         award(db, user, rules.PARTICIPATION_POINTS, "participation", f"battle:{battle.id}",
               memo=f"'{battle.category.name}' 대결 참가")
+        award(db, user, rules.FIRST_BATTLE_BONUS, "first_battle", "once", memo="첫 대결 참가 보너스")
         award_streak(db, user, battle)
         db.commit()
     except IntegrityError:  # 동시에 두 번 제출

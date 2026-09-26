@@ -75,10 +75,10 @@ RECIPES = [
 ]
 
 SHOP_ITEMS = [
-    {"name": "편의점 3천원 상품권", "description": "GS25/CU 사용 가능", "price": 10, "min_level": 1, "stock": None},
-    {"name": "아메리카노 기프티콘", "description": "", "price": 20, "min_level": 3, "stock": None},
-    {"name": "배달앱 1만원 쿠폰", "description": "이번 달 한정", "price": 50, "min_level": 5, "stock": 10},
-    {"name": "치킨 기프티콘", "description": "고수 전용", "price": 100, "min_level": 10, "stock": 5},
+    {"name": "편의점 1,000원권", "description": "GS25/CU 사용 가능", "price": 120, "min_level": 1, "stock": None, "monthly_limit": None},
+    {"name": "아메리카노 기프티콘", "description": "저가 커피 브랜드", "price": 240, "min_level": 2, "stock": None, "monthly_limit": 30},
+    {"name": "학식 식권 1회", "description": "", "price": 650, "min_level": 3, "stock": None, "monthly_limit": 20},
+    {"name": "치킨 기프티콘", "description": "고수 전용", "price": 2600, "min_level": 5, "stock": None, "monthly_limit": 10},
 ]
 
 

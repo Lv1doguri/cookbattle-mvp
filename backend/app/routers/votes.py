@@ -2,11 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .. import rules
 from ..auth import get_current_user
 from ..database import get_db
 from ..models import Submission, User, Vote
 from ..schemas import VoteResponse
 from ..services.battle import close_expired_battles, vote_block_reason, vote_counts
+from ..services.points import award
 from ..services.serializers import show_votes
 
 router = APIRouter(tags=["votes"])
@@ -14,7 +16,7 @@ router = APIRouter(tags=["votes"])
 
 @router.post("/submissions/{submission_id}/vote", response_model=VoteResponse)
 def vote(submission_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """1인 1표 (대결당). 본문 없음. 투표 기간에만, 그 대결에 참가한 사람만 가능."""
+    """1인 1표 (대결당). 본문 없음. 투표 기간에만, 그 대결에 참가한 사람만 가능. 투표하면 +VOTE_POINTS."""
     close_expired_battles(db)
     s = db.query(Submission).filter(Submission.id == submission_id).first()
     if s is None or s.is_hidden:
@@ -28,6 +30,8 @@ def vote(submission_id: int, db: Session = Depends(get_db), user: User = Depends
 
     db.add(Vote(battle_id=s.battle_id, submission_id=s.id, voter_id=user.id))
     try:
+        db.flush()
+        award(db, user, rules.VOTE_POINTS, "vote", f"battle:{s.battle_id}", memo="투표 참여")
         db.commit()
     except IntegrityError:
         db.rollback()

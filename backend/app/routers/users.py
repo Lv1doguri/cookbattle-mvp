@@ -13,6 +13,7 @@ from ..schemas import ExchangeOut, PointLogOut, TutorialUpdate, UserOut, UserUpd
 from ..services import ratelimit
 from ..services.accounts import validate_nickname
 from ..services.battle import battle_points_for_user, compute_rankings
+from ..services.points import expire_points
 from ..services.recipes import recipes_out
 from ..services.serializers import review_out, user_out
 from ..services.storage import to_url
@@ -22,7 +23,10 @@ router = APIRouter(prefix="/users/me", tags=["users"])
 
 
 @router.get("", response_model=UserOut)
-def me(user: User = Depends(get_current_user)):
+def me(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if expire_points(db, user):
+        db.commit()
+        db.refresh(user)
     return user_out(user)
 
 
@@ -68,6 +72,9 @@ def update_tutorial(payload: TutorialUpdate, db: Session = Depends(get_db), user
 @router.get("/home")
 def home(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """홈 탭: 프로필 + 이번 달 요리 횟수/절약 식비 + 대결 참가 이력 + 내가 쓴 후기."""
+    if expire_points(db, user):
+        db.commit()
+        db.refresh(user)
     since = month_start_utc()
 
     # 이번 달 요리 = 대결 참가 + 레시피 따라하기 완료

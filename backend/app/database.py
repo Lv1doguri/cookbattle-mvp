@@ -40,6 +40,8 @@ def migrate_sqlite() -> None:
         "comments": {"rating": "INTEGER", "updated_at": "DATETIME"},
         "submission_images": {"shot_type": "VARCHAR", "phash": "VARCHAR", "taken_at": "DATETIME"},
         "submissions": {"ai_status": "VARCHAR", "ai_result": "JSON"},
+        "point_logs": {"expired": "BOOLEAN NOT NULL DEFAULT 0"},
+        "shop_items": {"monthly_limit": "INTEGER"},
     }
     with engine.begin() as conn:
         for table, cols in new_columns.items():

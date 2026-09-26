@@ -404,7 +404,7 @@ class ShopItemOut(BaseModel):
     min_level: int
     stock: Optional[int]
     can_exchange: bool
-    blocked_reason: Optional[str]  # "N포인트 더 필요해요" / "N레벨부터 교환 가능" / "품절"
+    blocked_reason: Optional[str]  # "N포인트 더 필요해요" / "N레벨부터 교환 가능" / "품절" / "이번 달 물량이 다 나갔어요..." / 월 교환 횟수 초과
 
 
 class ShopItemCreate(BaseModel):
@@ -413,6 +413,7 @@ class ShopItemCreate(BaseModel):
     price: int = Field(ge=1)
     min_level: int = Field(default=1, ge=1)
     stock: Optional[int] = Field(default=None, ge=0)
+    monthly_limit: Optional[int] = Field(default=None, ge=0, description="이번 달 교환 가능 개수 상한 (달마다 자동 초기화)")
 
 
 class ExchangeOut(BaseModel):

@@ -140,13 +140,13 @@ for _ in range(10):
     c.post("/auth/login", json={"email": "temp@test.com", "password": "wrong1234"})
 check(c.post("/auth/login", json={"email": "temp@test.com", "password": "pass1234"}).status_code == 429,
       "로그인 10회 실패 → 잠시 잠금")
-check(ok(c.get("/users/me", headers=H1))["total_points"] == 4, "초대 2명 × 2P")
+check(ok(c.get("/users/me", headers=H1))["total_points"] == 34, "가입 보너스 30P + 초대 2명 × 2P")
 
 # ---------- 대결 ----------
 b = ok(c.get("/battles/current", headers=H1))
-check(b["group"] == "low" and b["days_left"] == 6 and b["category"]["name"], "하 그룹 대결 자동 생성")
-check(b["phase"] == "cooking" and b["phase_days_left"] == 4 and b["can_submit"], "요리 기간 5일로 시작")
-check(b["cooking_end_date"] < b["vote_start_date"] <= b["end_date"], "요리 5일 → 투표 2일")
+check(b["group"] == "low" and b["days_left"] == 1 and b["category"]["name"], "하 그룹 대결 자동 생성")
+check(b["phase"] == "cooking" and b["phase_days_left"] == 0 and b["can_submit"], "요리 기간 1일로 시작")
+check(b["cooking_end_date"] < b["vote_start_date"] <= b["end_date"], "요리 1일 → 투표 1일")
 bid = b["id"]
 check(ok(c.get("/battles/current", headers=H2))["id"] == bid, "같은 그룹은 같은 대결")
 bh = ok(c.get("/battles/current", headers=H4))
@@ -195,14 +195,14 @@ now_exif[306] = dt.datetime.now().strftime("%Y:%m:%d %H:%M:%S")
 reused = scene()
 r1 = ok(submit(H1, bid, "계란말이", cost=2000,
                files=[as_file(reused, exif=now_exif), as_file(scene(), exif=now_exif), as_file(scene(), exif=now_exif)]))
-check(r1["points_earned"] == 1 and r1["submission"]["title"] == "계란말이", "참가 즉시 +1P")
+check(r1["points_earned"] == 40 and r1["submission"]["title"] == "계란말이", "참가 즉시 +10P, 첫 참가라 +30P 추가")
 imgs = r1["submission"]["images"]
 check([i["shot_type"] for i in imgs] == shots1 and imgs[0]["shot_label"], "구도별 사진 저장")
 check(r1["submission"]["photo_verified"], "촬영 시각 확인 → 촬영 인증 배지")
 check(r1["submission"]["image_url"].endswith(".jpg"), "JPEG로 재저장")
 check(submit(H1, bid, "또").status_code == 400, "중복 참가")
 s1 = r1["submission"]["id"]
-r = submit(H2, bid, "스크램블", files=[as_file(reused.resize((500, 375))), img(), img()])
+r = submit(H2, bid, "스크램블", files=[as_file(reused.resize((600, 450))), img(), img()])
 check(r.status_code == 400 and "이미 올라온 적 있는" in detail(r), "남이 올린 사진 재사용 거절")
 r2 = ok(submit(H2, bid, "스크램블", cost=3000))
 check(not r2["submission"]["photo_verified"], "EXIF 없으면 미인증 (참가는 가능)")
@@ -265,12 +265,12 @@ check(c.post(f"/submissions/{s2}/vote", headers=H4).status_code == 400, "종료 
 
 res = ok(c.get(f"/battles/{bid}/results", headers=H1))
 check([e["submission_id"] for e in res["podium"]] == [s1, s2, s3], "시상대 순서")
-check([e["rank_points"] for e in res["podium"]] == [5, 4, 3], "1/2/3등 5/4/3P")
+check([e["rank_points"] for e in res["podium"]] == [50, 30, 20], "1/2/3등 100/60/40P, 참가자 10명 미만이라 절반")
 my = res["my_result"]
-check(my["rank"] == 1 and my["points_earned"] == 6 and my["can_share_recipe"], "내 결과")
-check(my["leveled_up"] and my["level_before"] == 1 and my["level_after"] == 2, "레벨업 팝업 정보 (4+1+5=10P)")
+check(my["rank"] == 1 and my["points_earned"] == 62 and my["can_share_recipe"], "내 결과 (참가10+투표2+1등50=62P)")
+check(my["leveled_up"] and my["level_before"] == 1 and my["level_after"] == 2, "레벨업 팝업 정보")
 me1 = ok(c.get("/users/me", headers=H1))
-check(me1["level"] == 2 and me1["points"] == 10 and me1["level_progress"] == 0.0, "레벨 2")
+check(me1["level"] == 2 and me1["points"] == 126 and abs(me1["level_progress"] - 0.13) < 0.001, "레벨 2")
 
 # ---------- 새 대결 / 무효 대결 ----------
 b2 = ok(c.get("/battles/current", headers=H1))
@@ -279,7 +279,7 @@ ok(submit(H1, b2["id"], "라면", cost=1500))
 ok(c.post(f"/admin/battles/{b2['id']}/close", headers=A))
 res2 = ok(c.get(f"/battles/{b2['id']}/results", headers=H1))
 check(res2["is_void"] and res2["podium"] == [] and not res2["my_result"]["can_share_recipe"], "3명 미만 무효")
-check(res2["my_result"]["points_earned"] == 1, "무효여도 참가 포인트")
+check(res2["my_result"]["points_earned"] == 10, "무효여도 참가 포인트")
 
 # ---------- 홈 ----------
 home = ok(c.get("/users/me/home", headers=H1))
@@ -308,10 +308,21 @@ check(len(ok(c.get("/users/me/saved-recipes", headers=H2))) == 1, "저장한 레
 ok(c.delete(f"/recipes/{rec['id']}/save", headers=H3))
 ok(c.get(f"/recipes/{rec['id']}", headers=H2))
 check(ok(c.get("/users/me/recent-recipes", headers=H2))[0]["id"] == rec["id"], "최근 본 레시피")
+from app import rules  # noqa: E402
+
+pts_before_review = ok(c.get("/users/me", headers=H2))["points"]
 rv = ok(c.post(f"/recipes/{rec['id']}/reviews", headers=H2, json={"content": "따라해 봤는데 맛있어요"}))
+check(ok(c.get("/users/me", headers=H2))["points"] - pts_before_review == rules.RECIPE_REVIEW_POINTS, "후기 작성 +1P")
 check(len(ok(c.get("/reviews", headers=H3))) == 1, "후기 모음")
 check(len(ok(c.get("/users/me/home", headers=H2))["my_reviews"]) == 1, "홈 > 내가 쓴 후기")
 check(c.delete(f"/reviews/{rv['id']}", headers=H3).status_code == 403, "남의 후기 삭제 불가")
+ok(c.post(f"/recipes/{rec['id']}/reviews", headers=H2, json={"content": "또 먹어봤어요"}))
+ok(c.post(f"/recipes/{rec['id']}/reviews", headers=H2, json={"content": "역시 맛있네요"}))
+pts_after_3 = ok(c.get("/users/me", headers=H2))["points"]
+check(pts_after_3 - pts_before_review == rules.RECIPE_REVIEW_DAILY_CAP, "후기 포인트 하루 상한까지는 계속 적립")
+ok(c.post(f"/recipes/{rec['id']}/reviews", headers=H2, json={"content": "네 번째 후기"}))
+check(ok(c.get("/users/me", headers=H2))["points"] == pts_after_3,
+      f"후기 포인트 하루 상한 {rules.RECIPE_REVIEW_DAILY_CAP}P 초과분은 지급 안 함")
 ok(c.post(f"/recipes/{rec['id']}/complete", headers=H3, files={"file": img()}))
 check(c.post(f"/recipes/{rec['id']}/complete", headers=H3, files={"file": img()}).status_code == 400, "완료 1회")
 
@@ -370,17 +381,54 @@ check(c.get(f"/recipes/{mine_r['id']}", headers=H3).status_code == 404, "레시�
 
 # ---------- 상점 ----------
 items = ok(c.get("/shop/items", headers=H1))
-cheap = next(i for i in items if i["price"] == 10)
+cheap = next(i for i in items if i["price"] == 120)
 lvl = next(i for i in items if i["min_level"] == 3)
 check(cheap["can_exchange"], "교환 가능")
 check(lvl["blocked_reason"] == "3레벨부터 교환 가능", "레벨 제한")
 ex = ok(c.post(f"/shop/items/{cheap['id']}/exchange", headers=H1))
-check(ex["points_left"] == 1, "보유 포인트 차감 (11-10)")
+check(ex["points_left"] == 16, "보유 포인트 차감 (136-120)")
 me1 = ok(c.get("/users/me", headers=H1))
-check(me1["total_points"] == 11 and me1["level"] == 2, "누적 포인트·레벨은 유지")
+check(me1["total_points"] == 136 and me1["level"] == 2, "누적 포인트·레벨은 유지")
 again = c.post(f"/shop/items/{cheap['id']}/exchange", headers=H1)
 check(again.status_code == 400 and "포인트 더 필요" in again.json()["detail"], "포인트 부족")
 check(len(ok(c.get("/users/me/exchanges", headers=H1))) == 1, "교환 내역")
+
+# ---------- 상점 안전장치: 상품별 월 재고 한도 · 1인당 월 교환 횟수 제한 ----------
+from app import rules  # noqa: E402
+
+stock_item = ok(c.post("/admin/shop/items", headers=A,
+                       json={"name": "월 1개 한정 쿠폰", "price": 1, "min_level": 1, "monthly_limit": 1}))
+ok(c.post(f"/shop/items/{stock_item['id']}/exchange", headers=H2))
+r = c.post(f"/shop/items/{stock_item['id']}/exchange", headers=H3)
+check(r.status_code == 400 and "이번 달 물량" in r.json()["detail"], "상품별 월 재고 한도 소진")
+
+cap_item = ok(c.post("/admin/shop/items", headers=A, json={"name": "무제한 쿠폰", "price": 1, "min_level": 1}))
+ok(c.post(f"/shop/items/{cap_item['id']}/exchange", headers=H3))
+ok(c.post(f"/shop/items/{cap_item['id']}/exchange", headers=H3))
+r = c.post(f"/shop/items/{cap_item['id']}/exchange", headers=H3)
+check(r.status_code == 400 and f"한 달에 {rules.MAX_EXCHANGES_PER_MONTH_PER_USER}번" in r.json()["detail"],
+      "1인당 월 교환 횟수 제한")
+
+# ---------- 포인트 유효기간 (12개월 경과 시 보유 포인트에서 소멸, 누적·레벨은 유지) ----------
+from app.database import SessionLocal  # noqa: E402
+from app.models import PointLog as _PointLog  # noqa: E402
+from app.models import User as _User  # noqa: E402
+from app.services.points import expire_points  # noqa: E402
+
+_db = SessionLocal()
+_u1 = _db.query(_User).filter(_User.id == u1["id"]).first()
+_signup_log = _db.query(_PointLog).filter(_PointLog.user_id == _u1.id, _PointLog.reason == "signup").first()
+_signup_log.created_at -= dt.timedelta(days=rules.POINT_EXPIRY_DAYS + 1)
+_points_before = _u1.points
+_total_before = _u1.total_points
+_db.commit()
+_expired = expire_points(_db, _u1)
+_db.commit()
+_want_expired = min(rules.SIGNUP_BONUS, _points_before)  # 상점에서 이미 쓴 만큼은 다시 깎지 않음
+check(_expired == _want_expired and _u1.points == _points_before - _want_expired,
+      "포인트 유효기간 경과 시 보유 포인트 소멸 (이미 쓴 만큼은 제외)")
+check(_u1.total_points == _total_before, "소멸돼도 누적 포인트(레벨용)는 그대로")
+_db.close()
 
 # ---------- 튜토리얼 / 설정 ----------
 check(ok(c.patch("/users/me/tutorial", headers=H1, json={"step": 2}))["tutorial_step"] == 2, "튜토리얼 이어보기")
@@ -518,6 +566,7 @@ check(c.delete(f"/friends/{u4['id']}", headers=H1).status_code == 404, "친구 �
 # ---------- 망한 요리 대회 (리그와 별개, 전체 참가) ----------
 fb = ok(c.get("/battles/fail/current", headers=H1))
 check(fb["kind"] == "fail" and fb["group_label"] == "전체" and fb["phase"] == "cooking", "망한 요리 대회 개최")
+check(fb["days_left"] == 3 and fb["phase_days_left"] == 2, "망한 요리 대회: 요리 3일 + 투표 1일 = 총 4일로 시작")
 check(ok(c.get("/battles/fail/current", headers=H4))["id"] == fb["id"], "리그 상관없이 같은 대회")
 fid = fb["id"]
 f1 = ok(submit(H1, fid, "숯이 된 계란말이"))["submission"]["id"]
@@ -531,7 +580,7 @@ ok(c.post(f"/submissions/{f4}/vote", headers=H2))
 ok(c.post(f"/submissions/{f1}/vote", headers=H4))
 ok(c.post(f"/admin/battles/{fid}/close", headers=A))
 fr = ok(c.get(f"/battles/{fid}/results", headers=H4))
-check([e["rank_points"] for e in fr["podium"]] == [3, 2], "망한 요리 대회 포인트 (3/2/1)")
+check([e["rank_points"] for e in fr["podium"]] == [25, 15], "망한 요리 대회 포인트 (50/30/20, 참가자 10명 미만이라 절반)")
 check(fr["my_result"]["rank"] == 1 and not fr["my_result"]["can_share_recipe"], "망한 요리 우승은 레시피 공유 없음")
 check(c.post(f"/submissions/{f4}/recipe", headers=H4, json=body).status_code == 400, "망한 요리 레시피 공유 불가")
 check(ok(c.get("/battles/fail/current", headers=H1))["id"] != fid, "종료 후 새 망한 요리 대회")

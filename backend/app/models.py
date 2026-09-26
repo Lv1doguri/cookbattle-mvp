@@ -60,7 +60,7 @@ class Category(Base):
 
 
 class Battle(Base):
-    """대결 1회 (1주일). group마다 동시에 1개만 진행.
+    """대결 1회 (리그: 요리 1일+투표 1일, 망한 요리 대회: 요리 3일+투표 1일). group마다 동시에 1개만 진행.
     - 리그 대결: group = low/mid/high (같은 실력끼리)
     - 망한 요리 대회: group = "fail" (리그 구분 없이 전체)
     기간: start_date ~ vote_start_date 전날 = 요리 기간 / vote_start_date ~ end_date = 투표 기간"""
@@ -85,7 +85,7 @@ class Battle(Base):
 
     @property
     def voting_starts(self):
-        return self.vote_start_date or (self.start_date + dt.timedelta(days=rules.COOKING_DAYS))
+        return self.vote_start_date or (self.start_date + dt.timedelta(days=rules.cooking_days_for(self.kind or "league")))
 
     @property
     def phase(self) -> str:
@@ -188,9 +188,10 @@ class PointLog(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     points = Column(Integer, nullable=False)
-    reason = Column(String, nullable=False)  # participation / rank / streak / recipe_complete / invite / invited
+    reason = Column(String, nullable=False)  # participation / rank / vote / streak / recipe_complete / review / invite / invited / signup / first_battle / expire
     ref = Column(String, nullable=False)  # "battle:3", "recipe:5", "week:2026-39", "user:7"
     memo = Column(String, default="")
+    expired = Column(Boolean, default=False, nullable=False)  # True면 POINT_EXPIRY_DAYS 경과로 보유 포인트에서 이미 회수됨
     created_at = Column(DateTime, default=utcnow)
 
 
@@ -283,7 +284,8 @@ class ShopItem(Base):
     description = Column(String, default="")
     price = Column(Integer, nullable=False)  # 필요 포인트
     min_level = Column(Integer, default=1, nullable=False)  # 레벨 제한
-    stock = Column(Integer, nullable=True)  # null = 무제한
+    stock = Column(Integer, nullable=True)  # 전체 누적 재고 상한. null = 무제한
+    monthly_limit = Column(Integer, nullable=True)  # 이번 달 교환 가능 개수 상한 (달마다 자동 초기화). null = 무제한
     is_active = Column(Boolean, default=True, nullable=False)
 
 

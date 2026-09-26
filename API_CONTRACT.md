@@ -1,4 +1,4 @@
-# CookBattle API 계약 (v3.8 — 레시피 목록·필터·올리기, 디자인 반영)
+# CookBattle API 계약 (v3.9 — 대결 일정·포인트 체계 개편, 수익화 기획 반영)
 
 베이스 URL: `http://localhost:8000` · Swagger: `http://localhost:8000/docs`
 인증: `Authorization: Bearer <access_token>` (가입/로그인/중복확인/`/meta` 제외 전부)
@@ -12,6 +12,15 @@
 | 429 | 너무 잦은 요청 (로그인 실패 10회/10분, AI 검사 30회/시간 등). `Retry-After` 헤더 | `detail` 표시 |
 | 500 | 서버 오류 ("서버에 문제가 생겼어요…") | `detail` 표시 |
 
+> **v3.9 변경 (프론트 수정 필요, 수익화·포인트 기획 반영)**
+> - **대결 일정**: 리그 대결 = **요리 1일 + 투표 1일**(총 2일, 예전 7일에서 대폭 단축), 망한 요리 대회 = **요리 3일 + 투표 1일**(총 4일)
+> - **포인트 대거 인상**: 가입 **+30P**(신규), 첫 대결 참가 **+30P**(신규, 1회), 대결 참가 1P→**10P**, 투표하면 **+2P**(신규), 순위 1/2/3등 5/4/3P→**100/60/40P**
+>   - 참가자가 10명 미만이면 순위 포인트는 **절반**만 지급 (계정 여러 개로 순위 나눠 먹기 방지). 3명 미만이면 기존처럼 대결 자체가 무효
+>   - 레시피 후기 작성 **+1P**(신규, 하루 최대 3P), 3주 연속 참가 보너스 2P→**20P**
+> - **레벨 기준표 변경**: 포인트당 균등 증가(10P/레벨) → **누적 100/300/700/1500P**에서 Lv.2~5, 그 이후는 800P씩 증가. `GET /meta`의 `points.level_thresholds`로 확인
+> - **상점 안전장치**: 상품마다 **월 재고 한도**(`monthly_limit`, 매달 자동 초기화), **1인당 월 교환 횟수 상한**(`GET /meta`의 `shop.max_exchanges_per_month_per_user`), 초과 시 `blocked_reason`에 안내 문구
+> - **포인트 유효기간**: 적립 후 12개월 지나면 보유(상점용) 포인트에서 자동 소멸 (누적 포인트·레벨은 그대로) — `GET /users/me`, `GET /users/me/home`, `GET /shop/items` 호출 시점에 정리됨
+>
 > **v3.8 변경**: `GET /recipes` 응답이 **`{ total, items }`**로 바뀜, 필터(종류·예산·시간·난이도·태그·재료로 찾기)·정렬 추가,
 > 레시피에 `cook_minutes`·`difficulty`·`food_type`·`tags`·`badge`·재료 `amount` 추가, **누구나 레시피 올리기/수정/삭제**
 >
@@ -56,13 +65,19 @@
     "mid":  { "label": "중", "description": "볶음밥, 찌개 같은 기본 요리 가능" },
     "high": { "label": "상", "description": "레시피 없이도 여러 요리를 해 본 경험이 있음" }
   },
-  "points": { "participation": 1, "rank": [5, 4, 3], "per_level": 10, "recipe_complete": 1, ... },
-  "battle": { "duration_days": 7, "min_participants": 3, "hide_votes_until_closed": false },
+  "points": { "signup_bonus": 30, "first_battle_bonus": 30, "participation": 10, "vote": 2,
+              "rank": [100, 60, 40], "rank_fail": [50, 30, 20], "rank_full_min_participants": 10,
+              "level_thresholds": [0, 100, 300, 700, 1500], "recipe_complete": 1,
+              "recipe_review": 1, "recipe_review_daily_cap": 3, "streak_weeks": 3, "streak_bonus": 20,
+              "invite_inviter": 2, "invite_invitee": 1, "expiry_days": 365 },
+  "battle": { "league_cooking_days": 1, "league_vote_days": 1, "fail_cooking_days": 3, "fail_vote_days": 1,
+              "min_participants": 3, "hide_votes_until_closed": false },
   "photos": { "shot_types": { "front": { "label": "...", "guide": "..." }, ... }, "fixed_shots": ["front", "keyword"],
               "random_shot_count": 1, "min_side": 400, "max_bytes": 8388608 },
   "delivery_avg_price": 15000,
   "tutorial_steps": 4,
-  "ai_check": { "enabled": true, "mode": "strict" }
+  "ai_check": { "enabled": true, "mode": "strict" },
+  "shop": { "max_exchanges_per_month_per_user": 2 }
 }
 ```
 
@@ -118,23 +133,23 @@
 
 ## 2. 대결 탭
 
-### 대회 일정 (공통 규칙)
+### 대회 일정 (종류별로 다름)
 ```
-1일차 ─────────── 5일차 │ 6일차 ──── 7일차 │ 종료 → 결과 공개 + 포인트 지급 → 다음 주 대회 자동 개최
-     요리 기간 (cooking)  │  투표 기간 (voting) │
-   사진 올려서 참가       │  참가자끼리 투표    │
+리그 대결 (총 2일):        1일차: 요리 기간 │ 2일차: 투표 기간 │ 종료 → 결과·포인트 지급 → 새 대결 자동 개최
+망한 요리 대회 (총 4일):   1~3일차: 요리 기간 │ 4일차: 투표 기간 │ 종료 → 결과·포인트 지급 → 새 대회 자동 개최
 ```
 - **요리 기간**: 참가(사진 올리기)만 가능, 투표 불가
 - **투표 기간**: 참가 불가, **그 대결에 참가한 사람만** 투표 가능 (1인 1표, 내 작품 제외)
 - 참가작이 신고로 숨김 처리되면 투표도 불가
 - 대회 종류 2가지가 **동시에 따로** 진행됨
 
-| 종류 | `kind` | 참가 대상 | API | 1/2/3등 포인트 | 우승 레시피 공유 |
-|---|---|---|---|---|---|
-| 리그 대결 | `league` | 같은 실력(하/중/상)끼리 | `GET /battles/current` | 5 / 4 / 3 | O |
-| 망한 요리 대회 | `fail` | 리그 구분 없이 **전체** | `GET /battles/fail/current` | 3 / 2 / 1 | X |
+| 종류 | `kind` | 참가 대상 | API | 기간(요리+투표) | 1/2/3등 포인트 | 우승 레시피 공유 |
+|---|---|---|---|---|---|---|
+| 리그 대결 | `league` | 같은 실력(하/중/상)끼리 | `GET /battles/current` | 1일+1일 | 100 / 60 / 40 | O |
+| 망한 요리 대회 | `fail` | 리그 구분 없이 **전체** | `GET /battles/fail/current` | 3일+1일 | 50 / 30 / 20 | X |
 
-둘 다 참가 시 +1P, 3명 미만이면 무효(참가 포인트만).
+둘 다 참가 시 +10P, 투표하면 +2P. **참가자가 10명 미만이면 순위 포인트는 절반만** 지급(위 표는 10명 이상 기준 수치),
+3명 미만이면 대결 자체가 무효(참가 포인트만 지급). 정확한 기간·포인트 숫자는 `GET /meta`의 `battle`/`points`를 참고하세요.
 
 ### GET /battles/current — 내 리그 대결 · GET /battles/fail/current — 망한 요리 대회
 진행 중인 대회가 없으면 서버가 해당 종류의 주제 중에서 랜덤으로 새 대회를 엽니다.
@@ -145,25 +160,25 @@
   "group": "low", "group_label": "하",
   "category": { "id": 1, "name": "계란 요리", "description": "계란을 메인 재료로 쓴 요리" },
   "start_date": "2026-09-25",
-  "cooking_end_date": "2026-09-29",
-  "vote_start_date": "2026-09-30",
-  "end_date": "2026-10-01",
-  "phase": "cooking", "phase_label": "요리 기간", "phase_days_left": 4,
-  "days_left": 6,
+  "cooking_end_date": "2026-09-25",
+  "vote_start_date": "2026-09-26",
+  "end_date": "2026-09-26",
+  "phase": "cooking", "phase_label": "요리 기간", "phase_days_left": 0,
+  "days_left": 1,
   "verification_keyword": "김치",
   "is_closed": false, "is_void": false,
   "submission_count": 2,
   "has_submitted": false, "has_voted": false,
   "can_submit": true,
   "can_vote": false,
-  "vote_block_reason": "투표는 09/30부터 시작해요 (지금은 요리 기간)",
+  "vote_block_reason": "투표는 09/26부터 시작해요 (지금은 요리 기간)",
   "is_my_group": true
 }
 ```
-- 망한 요리 대회는 `kind: "fail"`, `group: "fail"`, `group_label: "전체"`
+- 망한 요리 대회는 `kind: "fail"`, `group: "fail"`, `group_label: "전체"`, 요리 3일+투표 1일이라 기간이 더 김
 - **버튼 표시는 `can_submit` / `can_vote`로** 판단하고, 투표 버튼이 막혔을 땐 `vote_block_reason`을 아래에 표시
-  - "투표는 09/30부터 시작해요 (지금은 요리 기간)" / "이 대결에 참가한 사람만 투표할 수 있어요" / "이미 투표하셨습니다" / "이미 끝난 대결입니다"
-- 상단 배너 예: `phase_label` + "D-`phase_days_left`" (요리 기간 D-4, 투표 기간 D-1 …)
+  - "투표는 09/26부터 시작해요 (지금은 요리 기간)" / "이 대결에 참가한 사람만 투표할 수 있어요" / "이미 투표하셨습니다" / "이미 끝난 대결입니다"
+- 상단 배너 예: `phase_label` + "D-`phase_days_left`" (요리 기간 D-0, 투표 기간 D-0 …)
 - `verification_keyword`: 인증샷에 이 단어를 종이에 써서 같이 찍도록 안내
 
 ### GET /battles/active
@@ -251,12 +266,12 @@ await client.post(`/battles/${id}/submissions`, fd);
   - 키가 없거나 AI 호출이 실패하면 **거절하지 않고** `ai_check.status`를 `skipped`/`error`로 기록 (서비스 중단 방지)
   - 거절 문구 예: "AI 사진 검사를 통과하지 못했어요: '위에서 (탑뷰)' 사진이 요구한 구도와 달라요 (AI 판단: 옆에서) / 사진들이 서로 다른 요리처럼 보여요"
 
-**응답** → "참가 완료! +1P" 알림
+**응답** → "참가 완료! +10P" 알림 (`points_earned`는 참가 10P + 그 사람의 **첫 대결 참가라면 +30P**가 합산된 값)
 ```json
-{ "submission": { ...제출물 객체... }, "points_earned": 1, "level": 1, "leveled_up": false }
+{ "submission": { ...제출물 객체... }, "points_earned": 10, "level": 1, "leveled_up": false }
 ```
 기타 에러: 403 "내 실력 그룹의 대결에만 참가할 수 있어요"(리그 대결만) / 400 "이미 참가한 대결입니다",
-"요리 기간이 끝났어요. 지금은 투표 기간이에요 (~10/01)", "이미 끝난 대결입니다"
+"요리 기간이 끝났어요. 지금은 투표 기간이에요 (~09/26)", "이미 끝난 대결입니다"
 
 ### GET /battles/{battle_id}/submissions — 출품작 목록
 사용자마다 랜덤 순서(새로고침해도 유지)
@@ -298,11 +313,11 @@ await client.post(`/battles/${id}/submissions`, fd);
   "is_void": false,
   "podium": [
     { "submission_id": 7, "user_id": 1, "nickname": "지원", "title": "계란말이",
-      "image_url": "/uploads/a.jpg", "vote_count": 2, "rank": 1, "rank_points": 5 }
+      "image_url": "/uploads/a.jpg", "vote_count": 2, "rank": 1, "rank_points": 100 }
   ],
   "entries": [ ...전체 순위, 형식 동일... ],
   "my_result": {
-    "submission_id": 7, "rank": 1, "points_earned": 6,
+    "submission_id": 7, "rank": 1, "points_earned": 112,
     "level_before": 1, "level_after": 2, "leveled_up": true,
     "can_share_recipe": true
   }
@@ -310,9 +325,11 @@ await client.post(`/battles/${id}/submissions`, fd);
 ```
 - 순위: 득표순, 동점이면 먼저 제출한 사람 우선. 0표는 순위 포인트 없음
 - `podium`: 시상대(1~3등, 1표 이상)
-- `my_result`: 참가 안 했으면 null. `leveled_up`이면 **레벨업 축하 팝업**, `can_share_recipe`면 "레시피 공유하기" 버튼
+- `my_result`: 참가 안 했으면 null. `points_earned`는 이 대결로 받은 참가+투표+순위 포인트 합계 (첫 대결 보너스는 별도 집계라 미포함).
+  `leveled_up`이면 **레벨업 축하 팝업**, `can_share_recipe`면 "레시피 공유하기" 버튼
 - `is_void`: 참가자 3명 미만 → 대결 무효, 시상대 없음, 참가 포인트만 지급 ("참가자가 부족해 무효 처리됐어요")
-- 망한 요리 대회는 `rank_points`가 3/2/1이고 `can_share_recipe`는 항상 false
+- **참가자가 10명 미만이면 `rank_points`는 절반만 지급됨** (표시된 값은 이미 절반이 반영된 실제 지급액)
+- 망한 요리 대회는 `rank_points`가 50/30/20(10명 이상 기준)이고 `can_share_recipe`는 항상 false
 - 대결이 끝나면 `GET /battles/current`가 자동으로 새 카테고리 대결을 엽니다
 
 ### 작품 평가 (댓글 + 별점)
@@ -519,14 +536,18 @@ multipart `file` 1장 → +1P (레시피당 1회), 홈의 이번 달 요리 횟�
 
 ### GET /shop/items
 ```json
-[ { "id": 2, "name": "아메리카노 기프티콘", "description": "", "price": 20, "min_level": 3,
-    "stock": null, "can_exchange": false, "blocked_reason": "3레벨부터 교환 가능" } ]
+[ { "id": 2, "name": "아메리카노 기프티콘", "description": "", "price": 240, "min_level": 2,
+    "stock": null, "can_exchange": false, "blocked_reason": "2레벨부터 교환 가능" } ]
 ```
-`blocked_reason`: "N포인트 더 필요해요" / "N레벨부터 교환 가능" / "품절" → `can_exchange`가 false면 버튼 비활성화 + 이 문구 표시
+`blocked_reason`: "N포인트 더 필요해요" / "N레벨부터 교환 가능" / "품절" / "이번 달 물량이 다 나갔어요 (다음 달 1일 재입고)" /
+"한 달에 N번까지 교환할 수 있어요" → `can_exchange`가 false면 버튼 비활성화 + 이 문구 표시
 
 ### POST /shop/items/{id}/exchange
-`{ "id": 1, "item_id": 2, "item_name": "...", "price": 20, "created_at": "...", "points_left": 5 }` → 교환 완료 팝업
+`{ "id": 1, "item_id": 2, "item_name": "...", "price": 240, "created_at": "...", "points_left": 5 }` → 교환 완료 팝업
 보유 포인트(`points`)만 차감, 누적 포인트·레벨은 그대로. MVP라 실제 발송 없음.
+안전장치: 상품별 **월 재고 한도**(매달 자동 초기화, `POST /admin/shop/items`의 `monthly_limit`으로 설정)와
+**1인당 월 교환 횟수 상한**(`GET /meta`의 `shop.max_exchanges_per_month_per_user`, 기본 2회)이 있습니다.
+보유 포인트는 **적립 후 12개월이 지나면 자동 소멸**합니다 (누적 포인트·레벨은 그대로).
 
 ### GET /users/me/exchanges — 교환 내역
 
@@ -623,7 +644,7 @@ multipart `file` 1장 → +1P (레시피당 1회), 홈의 이번 달 요리 횟�
 | POST | /admin/battles/{id}/close | **시연용 즉시 종료** → 순위 포인트 지급 |
 | POST | /admin/battles/start | `{ "group": "low", "category_id": null }` 새 대회 (group: low/mid/high/**fail**, null이면 랜덤) |
 | GET/POST | /admin/categories | 주제 목록/추가 `{ "name", "description", "kind": "league" 또는 "fail" }` |
-| POST | /admin/shop/items | 상품 추가 `{ "name", "description", "price", "min_level", "stock" }` |
+| POST | /admin/shop/items | 상품 추가 `{ "name", "description", "price", "min_level", "stock", "monthly_limit" }` |
 | GET | /admin/exchanges | 전체 교환 내역 |
 | GET | /admin/ai/status | 이미지 인식 AI 설정 확인 (키 설정 여부, 모드, 모델) |
 | POST | /admin/submissions/{id}/hide?hidden=true | 작품 숨김/복구 |

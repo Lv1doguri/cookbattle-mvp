@@ -7,33 +7,62 @@ SKILLS = {
     "high": {"label": "상", "description": "레시피 없이도 여러 요리를 해 본 경험이 있음"},
 }
 
-# ---- 포인트 / 레벨 ----
-PARTICIPATION_POINTS = 1          # 대결 참가 즉시 지급
-RANK_POINTS = [5, 4, 3]           # 1/2/3등 (득표 1표 이상일 때만)
-POINTS_PER_LEVEL = 10             # 누적 포인트 N점마다 레벨 1 상승 (모두 1레벨 시작)
+# ---- 포인트 / 레벨 (수익화·포인트 기획: 1P ≈ 10원) ----
+SIGNUP_BONUS = 30                 # 가입 보너스 (1회) — 시작하자마자 목표가 보이게
+FIRST_BATTLE_BONUS = 30           # 첫 대결 참가 보너스 (1회) — 첫 참가 유도
+PARTICIPATION_POINTS = 10         # 대결 참가 즉시 지급 (기본 보상)
+VOTE_POINTS = 2                   # 투표 시 지급 (대결당 1인 1표라 자연히 1회)
+RANK_POINTS = [100, 60, 40]       # 1/2/3등 (득표 1표 이상일 때만)
+RANK_FULL_MIN_PARTICIPANTS = 10   # 참가자가 이보다 적으면 순위 포인트 절반만 (계정 여러 개로 순위 나눠 먹기 방지)
 RECIPE_COMPLETE_POINTS = 1        # 레시피 따라하기 완료 인증 (레시피당 1회)
-STREAK_WEEKS = 3                  # [Could] N주 연속 참가 시
-STREAK_BONUS = 2                  #         보너스 (0으로 두면 끔)
+RECIPE_REVIEW_POINTS = 1          # 레시피 후기 작성 1건당
+RECIPE_REVIEW_DAILY_CAP = 3       # 후기로 받는 포인트 하루 상한 (도배 방지)
+STREAK_WEEKS = 3                  # N주 연속 참가 시
+STREAK_BONUS = 20                 #         보너스 (0으로 두면 끔) — 꾸준히 오게 만드는 장치
 INVITE_POINTS_INVITER = 2         # 친구 초대한 사람
 INVITE_POINTS_INVITEE = 1         # 초대 코드로 가입한 사람
 INVITE_AUTO_FRIEND = True         # 초대 코드로 가입하면 초대한 사람과 자동으로 친구
 MAX_FRIENDS = 100                 # 친구 수 상한
 MAX_PENDING_FRIEND_REQUESTS = 30  # 수락 대기 중인 보낸 요청 상한 (도배 방지)
 AI_CALLS_PER_HOUR = 30            # 사용자당 이미지 인식 AI 호출 상한 (유료 API 남용 방지)
+POINT_EXPIRY_DAYS = 365           # 적립 후 이 기간이 지나면 보유(상점용) 포인트에서 소멸. 누적 포인트·레벨은 줄지 않음
+
+# 레벨 기준 (누적 포인트, 상점에서 써도 줄지 않음). LEVEL_THRESHOLDS[i]는 (i+1)레벨이 되기 위한 누적 포인트
+# 예: 100P → Lv.2, 300P → Lv.3, 700P → Lv.4, 1500P → Lv.5. 그 이상은 LEVEL_STEP_AFTER_TABLE(800P)씩 증가
+LEVEL_THRESHOLDS = [0, 100, 300, 700, 1500]
+LEVEL_STEP_AFTER_TABLE = 800
+
+# ---- 상점 안전장치 (적자 방지) ----
+MAX_EXCHANGES_PER_MONTH_PER_USER = 2  # 1인당 한 달 교환 횟수 상한
 
 # ---- 대결 ----
-# 1주일 = 요리(참가) 기간 5일 + 투표 기간 2일. 투표는 그 대결 참가자만 가능.
-BATTLE_DURATION_DAYS = 7          # 대결 전체 기간
-COOKING_DAYS = 5                  # 앞 5일: 사진 올리기 / 뒤 2일: 참가자끼리 투표
+# 리그 대결: 짧고 빠르게 회전 (요리 1일 + 투표 1일). 투표는 그 대결 참가자만 가능.
+LEAGUE_COOKING_DAYS = 1
+LEAGUE_VOTE_DAYS = 1
+# 망한 요리 대회: 리그보다 느긋하게 (요리 3일 + 투표 1일 = 총 4일)
+FAIL_COOKING_DAYS = 3
+FAIL_VOTE_DAYS = 1
 LEAGUE_GROUPS = ["low", "mid", "high"]  # 실력 리그 (SKILLS 키)
 FAIL_GROUP = "fail"               # '망한 요리 대회' — 리그 구분 없이 전체 참가
 FAIL_CONTEST_ENABLED = True
-FAIL_RANK_POINTS = [3, 2, 1]      # 망한 요리 대회 1/2/3등 (재미 대회라 리그보다 적게)
+FAIL_RANK_POINTS = [50, 30, 20]   # 망한 요리 대회 1/2/3등 (재미 대회라 리그보다 적게)
 BATTLE_KINDS = {"league": "리그 대결", "fail": "망한 요리 대회"}
 PHASE_LABELS = {"cooking": "요리 기간", "voting": "투표 기간", "closed": "종료"}
 MIN_PARTICIPANTS = 3              # 이보다 적으면 대결 무효 (참가 포인트만 지급)
 HIDE_VOTES_UNTIL_CLOSED = False   # True면 마감 전 득표수 비공개 (기획서: 투표 화면에 투표 수 표시)
 MAX_FILE_SIZE_BYTES = 8 * 1024 * 1024
+
+
+def cooking_days_for(kind: str) -> int:
+    return FAIL_COOKING_DAYS if kind == "fail" else LEAGUE_COOKING_DAYS
+
+
+def vote_days_for(kind: str) -> int:
+    return FAIL_VOTE_DAYS if kind == "fail" else LEAGUE_VOTE_DAYS
+
+
+def duration_days_for(kind: str) -> int:
+    return cooking_days_for(kind) + vote_days_for(kind)
 
 # ---- 다중 구도 인증샷 ----
 # 대결 참가 시 사용자마다 '촬영 가이드'가 정해진다: 고정 구도 + 랜덤 구도 N개.
@@ -105,16 +134,37 @@ TUTORIAL_STEPS = 4
 
 
 def level_for(total_points: int) -> int:
-    return 1 + max(total_points, 0) // POINTS_PER_LEVEL
+    total = max(total_points, 0)
+    level = 1
+    for threshold in LEVEL_THRESHOLDS[1:]:
+        if total >= threshold:
+            level += 1
+        else:
+            return level
+    extra = total - LEVEL_THRESHOLDS[-1]
+    return level + extra // LEVEL_STEP_AFTER_TABLE
+
+
+def _threshold_for_level(level: int) -> int:
+    """그 레벨이 되기 위해 필요한 누적 포인트."""
+    idx = level - 1
+    if idx < len(LEVEL_THRESHOLDS):
+        return LEVEL_THRESHOLDS[idx]
+    extra_levels = idx - (len(LEVEL_THRESHOLDS) - 1)
+    return LEVEL_THRESHOLDS[-1] + extra_levels * LEVEL_STEP_AFTER_TABLE
 
 
 def next_level_points(total_points: int) -> int:
-    return level_for(total_points) * POINTS_PER_LEVEL
+    return _threshold_for_level(level_for(total_points) + 1)
 
 
 def level_progress(total_points: int) -> float:
     """현재 레벨 진행률 0.0 ~ 1.0 (레벨 진행 바용)."""
-    return (max(total_points, 0) % POINTS_PER_LEVEL) / POINTS_PER_LEVEL
+    total = max(total_points, 0)
+    level = level_for(total)
+    cur, nxt = _threshold_for_level(level), _threshold_for_level(level + 1)
+    span = nxt - cur
+    return (total - cur) / span if span > 0 else 0.0
 
 
 def skill_label(key: str) -> str:

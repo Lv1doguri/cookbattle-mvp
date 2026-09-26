@@ -82,6 +82,7 @@ def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_d
     try:
         db.add(user)
         db.flush()
+        award(db, user, rules.SIGNUP_BONUS, "signup", f"user:{user.id}", memo="가입 보너스")
         if inviter:
             award(db, inviter, rules.INVITE_POINTS_INVITER, "invite", f"user:{user.id}", memo=f"{nickname}님 초대")
             award(db, user, rules.INVITE_POINTS_INVITEE, "invited", f"user:{inviter.id}",

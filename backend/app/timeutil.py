@@ -30,3 +30,10 @@ def month_start_utc() -> dt.datetime:
     now = dt.datetime.now(_tz())
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return start.astimezone(dt.timezone.utc).replace(tzinfo=None)
+
+
+def day_start_utc() -> dt.datetime:
+    """오늘 0시(서비스 시간대)를 UTC naive로. '오늘 하루' 상한(후기 포인트 등) 계산용."""
+    now = dt.datetime.now(_tz())
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(dt.timezone.utc).replace(tzinfo=None)
