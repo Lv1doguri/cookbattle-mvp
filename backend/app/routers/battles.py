@@ -1,142 +1,337 @@
-from typing import Optional
+import math
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, or_, select
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .. import clock
-from ..content import WEEKDAY_LABELS, WEEKLY_THEMES
+from ..content import PARTICIPATION_POINTS
 from ..database import get_db
 from ..enums import TIER_LABEL, Tier
 from ..errors import ApiError
-from ..models import Battle, Post, User
+from ..models import Battle, Entry, Ingredient, Recipe, RecipeTool, Step, User, Vote
 from ..schemas import (
     BattleOut,
-    LeaderboardEntry,
-    LeaderboardMe,
-    LeaderboardOut,
-    MyEntryOut,
-    WeeklyThemeOut,
+    EntryListOut,
+    JoinOut,
+    LastResultOut,
+    RecipeCreateIn,
+    RecipeDetailOut,
+    ResultMe,
+    ResultOut,
+    ResultRow,
+    VoteOut,
 )
 from ..security import get_current_user
-from ..services.battles import get_or_create_battle
-from ..services.serialize import count, user_brief
+from ..services.accounts import count, user_brief
+from ..services.battles import (
+    battle_title,
+    entry_out,
+    entry_outs,
+    finalize_due_battles,
+    get_or_create_battle,
+    is_open,
+    ranked_entries,
+    week_label,
+)
+from ..services.images import delete_image, read_image, write_image
+from ..services.points import grant_points
+from ..services.recipes import build_detail, recipe_query
 
-router = APIRouter(prefix="/battles", tags=["battles"])
+router = APIRouter(tags=["battles"])
 
-
-def _ranked_ahead_of(mine: Post):
-    """Ranking: higher score first; ties go to the earlier entry."""
-    return or_(
-        Post.battle_score > mine.battle_score,
-        and_(
-            Post.battle_score == mine.battle_score,
-            or_(
-                Post.created_at < mine.created_at,
-                and_(Post.created_at == mine.created_at, Post.id < mine.id),
-            ),
-        ),
-    )
-
-
-def _my_rank(db: Session, battle_id: int, mine: Post) -> int:
-    return count(db, Post, Post.battle_id == battle_id, _ranked_ahead_of(mine)) + 1
+TOP_N = 10
 
 
-@router.get("/today", response_model=BattleOut)
-def today_battle(
-    tier: Optional[Tier] = Query(None, description="생략하면 내 실력 단계"),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """오늘의 대결. 탭(초급/중급/고급)마다 tier를 바꿔 호출하세요. 내 단계가 아닌 탭은 can_join=false."""
-    now = clock.utcnow()
-    today = clock.kst_date(now)
-    battle = get_or_create_battle(db, tier or user.tier or Tier.beginner, today)
-
-    mine = db.scalar(select(Post).where(Post.battle_id == battle.id, Post.author_id == user.id))
-    is_my_tier = user.tier == battle.tier
-    is_open = battle.starts_at <= now < battle.ends_at
-    return BattleOut(
-        id=battle.id,
-        date=battle.date,
-        tier=battle.tier,
-        tier_label=TIER_LABEL[battle.tier],
-        theme=battle.theme,
-        description=battle.description,
-        reward_xp=battle.reward_xp,
-        reward_coins=battle.reward_coins,
-        starts_at=battle.starts_at,
-        ends_at=battle.ends_at,
-        seconds_left=max(0, int((battle.ends_at - now).total_seconds())),
-        server_time=now,
-        participants=count(db, Post, Post.battle_id == battle.id),
-        is_my_tier=is_my_tier,
-        can_join=is_my_tier and is_open and mine is None,
-        my_entry=(
-            MyEntryOut(post_id=mine.id, xp=mine.battle_score, rank=_my_rank(db, battle.id, mine)) if mine else None
-        ),
-        weekly_challenge=[
-            WeeklyThemeOut(weekday=WEEKDAY_LABELS[i], theme=sched["theme"], is_today=i == today.weekday())
-            for i, sched in enumerate(WEEKLY_THEMES)
-        ],
-    )
-
-
-@router.get("/{battle_id}/leaderboard", response_model=LeaderboardOut)
-def leaderboard(
-    battle_id: int,
-    limit: int = Query(50, ge=1, le=100, description="홈/대결 화면 미리보기는 2, 전체 보기는 100"),
-    offset: int = Query(0, ge=0),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def _get_battle(db: Session, battle_id: int) -> Battle:
     battle = db.get(Battle, battle_id)
     if battle is None:
         raise ApiError(404, "battle_not_found", "대결을 찾을 수 없습니다")
+    return battle
 
-    rows = db.execute(
-        select(Post, User)
-        .join(User, User.id == Post.author_id)
-        .where(Post.battle_id == battle_id)
-        .order_by(Post.battle_score.desc(), Post.created_at.asc(), Post.id.asc())
-        .limit(limit)
-        .offset(offset)
-    ).all()
-    entries = [
-        LeaderboardEntry(
-            rank=offset + i + 1,
-            user=user_brief(author),
-            xp=post.battle_score,
-            post_id=post.id,
-            is_me=author.id == user.id,
+
+def _my_entry(db: Session, battle_id: int, user_id: int) -> Optional[Entry]:
+    return db.scalar(
+        select(Entry).options(joinedload(Entry.user)).where(Entry.battle_id == battle_id, Entry.user_id == user_id)
+    )
+
+
+@router.get("/battles/current", response_model=BattleOut)
+def current_battle(
+    tier: Optional[Tier] = Query(None, description="대결 그룹 탭. 생략하면 내 그룹"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """이번 주 대결. 그룹 탭(초급/중급/상급)을 바꿀 때마다 tier를 바꿔 부르세요.
+    내 그룹이 아닌 탭은 can_join=false → '내 그룹(중급) 대결에만 참가할 수 있어요'."""
+    now = clock.utcnow()
+    finalize_due_battles(db, now)
+    battle = get_or_create_battle(db, tier or user.tier, now)
+
+    mine = _my_entry(db, battle.id, user.id)
+    open_ = is_open(battle, now)
+    is_my_group = battle.tier == user.tier
+
+    last = db.scalar(
+        select(Battle)
+        .where(Battle.tier == battle.tier, Battle.finalized_at.is_not(None), Battle.week_start < battle.week_start)
+        .order_by(Battle.week_start.desc())
+        .limit(1)
+    )
+    last_result = None
+    if last is not None:
+        last_entry = _my_entry(db, last.id, user.id)
+        last_result = LastResultOut(
+            battle_id=last.id,
+            title=battle_title(last.theme),
+            week_label=week_label(last.week_start),
+            status="void" if last.is_void else "ranked",
+            joined=last_entry is not None,
+            my_rank=last_entry.rank if last_entry else None,
         )
-        for i, (post, author) in enumerate(rows)
-    ]
 
-    me = None
-    mine = db.scalar(select(Post).where(Post.battle_id == battle_id, Post.author_id == user.id))
-    if mine is not None:
-        rank = _my_rank(db, battle_id, mine)
-        xp_to_next = 0
-        if rank > 1:
-            above = db.scalar(
-                select(Post)
-                .where(Post.battle_id == battle_id, _ranked_ahead_of(mine))
-                .order_by(Post.battle_score.asc(), Post.created_at.desc(), Post.id.desc())
-                .limit(1)
-            )
-            gap = above.battle_score - mine.battle_score
-            i_win_ties = (mine.created_at, mine.id) < (above.created_at, above.id)
-            xp_to_next = gap if i_win_ties else gap + 1
-        me = LeaderboardMe(rank=rank, xp=mine.battle_score, xp_to_next_rank=xp_to_next)
+    seconds_left = max(0, int((battle.ends_at - now).total_seconds()))
+    return BattleOut(
+        id=battle.id,
+        tier=battle.tier,
+        tier_label=TIER_LABEL[battle.tier],
+        title=battle_title(battle.theme),
+        theme=battle.theme,
+        description=battle.description,
+        week_label=week_label(battle.week_start),
+        starts_at=battle.starts_at,
+        ends_at=battle.ends_at,
+        seconds_left=seconds_left,
+        days_left=math.ceil(seconds_left / 86400),
+        server_time=now,
+        participants=count(db, Entry, Entry.battle_id == battle.id),
+        is_open=open_,
+        is_my_group=is_my_group,
+        has_joined=mine is not None,
+        can_join=is_my_group and open_ and mine is None,
+        my_entry=entry_out(mine, "mine") if mine else None,
+        last_result=last_result,
+    )
 
-    return LeaderboardOut(
+
+@router.get("/battles/{battle_id}/entries", response_model=EntryListOut)
+def list_entries(battle_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """투표 화면: 출품작 목록. 각 항목의 state로 버튼을 정하세요
+    (votable=투표 · mine=투표 불가 · voted=투표함 · vote_done=투표 완료 · unavailable=투표 못 하는 상태)."""
+    now = clock.utcnow()
+    finalize_due_battles(db, now)
+    battle = _get_battle(db, battle_id)
+
+    entries = db.scalars(
+        select(Entry)
+        .options(joinedload(Entry.user))
+        .where(Entry.battle_id == battle_id)
+        .order_by(Entry.created_at.asc(), Entry.id.asc())
+    ).all()
+    my_vote = db.get(Vote, (battle_id, user.id))
+    open_ = is_open(battle, now)
+    can_vote = open_ and battle.tier == user.tier
+    return EntryListOut(
         battle_id=battle.id,
         tier=battle.tier,
         tier_label=TIER_LABEL[battle.tier],
+        title=battle_title(battle.theme),
+        participants=len(entries),
+        is_open=open_,
+        can_vote=can_vote,
+        has_voted=my_vote is not None,
+        my_vote_entry_id=my_vote.entry_id if my_vote else None,
+        items=entry_outs(entries, user.id, my_vote.entry_id if my_vote else None, can_vote),
+    )
+
+
+@router.post("/battles/{battle_id}/entries", response_model=JoinOut, status_code=201)
+def join_battle(
+    battle_id: int,
+    dish_name: str = Form(..., max_length=60, description="요리명"),
+    description: str = Form("", max_length=500, description="설명"),
+    photo: UploadFile = File(..., description="요리 사진 (필수)"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """요리 인증 화면의 [제출]. multipart/form-data. 참가하면 +1P."""
+    now = clock.utcnow()
+    finalize_due_battles(db, now)
+    battle = _get_battle(db, battle_id)
+
+    dish_name = dish_name.strip()
+    if not dish_name:
+        raise ApiError(422, "validation_error", "요리명을 입력해주세요")
+    if battle.tier != user.tier:
+        raise ApiError(403, "wrong_group", f"내 그룹({TIER_LABEL[user.tier]}) 대결에만 참가할 수 있어요")
+    if not is_open(battle, now):
+        raise ApiError(400, "battle_closed", "마감된 대결이에요")
+    if _my_entry(db, battle.id, user.id) is not None:
+        raise ApiError(409, "already_entered", "한 대결에는 한 번만 참가할 수 있어요")
+
+    data, ext = read_image(photo)
+    filename = write_image(data, ext)
+    entry = Entry(
+        battle_id=battle.id,
+        user_id=user.id,
+        dish_name=dish_name,
+        description=description.strip(),
+        photo_filename=filename,
+        created_at=now,
+    )
+    db.add(entry)
+    try:
+        db.flush()
+    except IntegrityError:  # double tap: the other request already entered
+        db.rollback()
+        delete_image(filename)
+        raise ApiError(409, "already_entered", "한 대결에는 한 번만 참가할 수 있어요")
+
+    grant_points(db, user, PARTICIPATION_POINTS, reason="participation", ref_type="entry", ref_id=entry.id)
+    db.commit()
+    return JoinOut(entry=entry_out(entry, "mine"), points_awarded=PARTICIPATION_POINTS, points=user.points)
+
+
+@router.post("/entries/{entry_id}/vote", response_model=VoteOut)
+def vote(entry_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """[투표]. 대결 하나에 1인 1표, 자기 작품 불가, 내 그룹 대결만."""
+    now = clock.utcnow()
+    finalize_due_battles(db, now)
+    entry = db.get(Entry, entry_id)
+    if entry is None:
+        raise ApiError(404, "entry_not_found", "출품작을 찾을 수 없습니다")
+    battle = _get_battle(db, entry.battle_id)
+
+    if battle.tier != user.tier:
+        raise ApiError(403, "wrong_group", "내 그룹의 대결에만 투표할 수 있어요")
+    if not is_open(battle, now):
+        raise ApiError(400, "battle_closed", "투표가 마감됐어요")
+    if entry.user_id == user.id:
+        raise ApiError(400, "own_entry", "자기 작품에는 투표할 수 없어요")
+
+    db.add(Vote(battle_id=battle.id, voter_id=user.id, entry_id=entry.id, created_at=now))
+    try:
+        db.flush()
+    except IntegrityError:  # primary key (battle_id, voter_id): already voted in this battle
+        db.rollback()
+        raise ApiError(409, "already_voted", "이미 투표하셨습니다")
+    db.execute(update(Entry).where(Entry.id == entry.id).values(vote_count=Entry.vote_count + 1))
+    db.commit()
+    db.refresh(entry)
+    return VoteOut(entry_id=entry.id, vote_count=entry.vote_count, has_voted=True)
+
+
+@router.get("/battles/{battle_id}/result", response_model=ResultOut)
+def battle_result(battle_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """대결 결과. 마감 전이면 409(battle_not_finished). 참가자 3명 미만이면 status=void(순위 없음)."""
+    now = clock.utcnow()
+    finalize_due_battles(db, now)
+    battle = _get_battle(db, battle_id)
+    if battle.finalized_at is None:
+        raise ApiError(409, "battle_not_finished", "아직 진행 중인 대결이에요")
+
+    entries = ranked_entries(db, battle.id)
+    void = battle.is_void
+    # entry_id -> id of the recipe its author already shared from it
+    shared = {}
+    if entries:
+        rows_ = db.execute(select(Recipe.entry_id, Recipe.id).where(Recipe.entry_id.in_([e.id for e in entries])))
+        shared = {entry_id: recipe_id for entry_id, recipe_id in rows_}
+
+    rows: List[ResultRow] = []
+    if not void:
+        for i, e in enumerate(entries):
+            same_as_prev = i > 0 and entries[i - 1].vote_count == e.vote_count
+            same_as_next = i + 1 < len(entries) and entries[i + 1].vote_count == e.vote_count
+            rows.append(
+                ResultRow(
+                    rank=e.rank,
+                    entry_id=e.id,
+                    user=user_brief(e.user),
+                    dish_name=e.dish_name,
+                    vote_count=e.vote_count,
+                    submitted_at=e.created_at,
+                    tie="tied" if same_as_prev else ("first" if same_as_next else None),
+                    is_me=e.user_id == user.id,
+                    can_share_recipe=e.rank == 1 and e.id not in shared,
+                )
+            )
+
+    mine = next((e for e in entries if e.user_id == user.id), None)
+    me = ResultMe(
+        joined=mine is not None,
+        rank=mine.rank if mine else None,
+        participation_points=PARTICIPATION_POINTS if mine else 0,
+        rank_points=mine.rank_points if mine else 0,
+        level_from=mine.level_from if mine else None,
+        level_to=mine.level_to if mine else None,
+        leveled_up=bool(mine and mine.level_from and mine.level_to and mine.level_to > mine.level_from),
+        can_share_recipe=bool(mine and not void and mine.rank == 1 and mine.id not in shared),
+        shared_recipe_id=shared.get(mine.id) if mine else None,
+    )
+    return ResultOut(
+        battle_id=battle.id,
+        tier=battle.tier,
+        tier_label=TIER_LABEL[battle.tier],
+        title=battle_title(battle.theme),
         theme=battle.theme,
-        participants=count(db, Post, Post.battle_id == battle_id),
-        entries=entries,
+        week_label=week_label(battle.week_start),
+        participants=len(entries),
+        status="void" if void else "ranked",
+        podium=rows[:3],
+        top10=rows[:TOP_N],
         me=me,
     )
+
+
+@router.post("/entries/{entry_id}/recipe", response_model=RecipeDetailOut, status_code=201)
+def share_recipe(
+    entry_id: int,
+    body: RecipeCreateIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """1등이 자기 레시피를 레시피 탭에 공유. (디자인에 입력 화면이 없어서 필드는 레시피 상세 기준으로 잡았어요)"""
+    now = clock.utcnow()
+    finalize_due_battles(db, now)
+    entry = db.scalar(select(Entry).options(joinedload(Entry.battle)).where(Entry.id == entry_id))
+    if entry is None:
+        raise ApiError(404, "entry_not_found", "출품작을 찾을 수 없습니다")
+    if entry.user_id != user.id:
+        raise ApiError(403, "not_your_entry", "내 출품작이 아니에요")
+    battle = entry.battle
+    if battle.finalized_at is None or battle.is_void or entry.rank != 1:
+        raise ApiError(403, "not_winner", "대결 1등만 레시피를 공유할 수 있어요")
+    if db.scalar(select(Recipe.id).where(Recipe.entry_id == entry.id)) is not None:
+        raise ApiError(409, "already_shared", "이미 레시피를 공유했어요")
+
+    recipe = Recipe(
+        author_id=user.id,
+        entry_id=entry.id,
+        title=body.name or entry.dish_name,
+        category=body.category,
+        cost_krw=body.price,
+        cook_minutes=body.minutes,
+        difficulty=body.difficulty,
+        win_label=f"{battle_title(battle.theme)} 1등",
+        photo_filename=entry.photo_filename,
+        created_at=now,
+    )
+    recipe.ingredients = [Ingredient(position=i, name=x.name, amount=x.amount) for i, x in enumerate(body.ingredients)]
+    recipe.steps = [Step(position=i + 1, text=s.text) for i, s in enumerate(body.steps)]
+    recipe.tools = [RecipeTool(tool=t) for t in dict.fromkeys(body.tools)]
+    db.add(recipe)
+    try:
+        db.commit()
+    except IntegrityError:  # shared twice at once
+        db.rollback()
+        raise ApiError(409, "already_shared", "이미 레시피를 공유했어요")
+
+    fresh = db.scalar(
+        recipe_query()
+        .where(Recipe.id == recipe.id)
+        .options(selectinload(Recipe.ingredients), selectinload(Recipe.steps), selectinload(Recipe.tools))
+    )
+    return build_detail(db, fresh, user)

@@ -11,6 +11,7 @@ from .config import settings
 from .database import get_db
 from .errors import ApiError
 from .models import User
+from .services.accounts import apply_pending_tier
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -46,4 +47,5 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None:
         raise unauthorized
+    apply_pending_tier(db, user, clock.utcnow())
     return user

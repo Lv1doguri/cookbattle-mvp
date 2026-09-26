@@ -22,7 +22,7 @@ PASSWORD = "cookup123"
 @pytest.fixture
 def client():
     Base.metadata.drop_all(engine)
-    with TestClient(app) as c:  # entering the context runs the lifespan: create tables + seed shop
+    with TestClient(app) as c:  # entering the context runs the lifespan: create tables + seed content
         yield c
 
 
@@ -34,55 +34,45 @@ def freeze(monkeypatch):
     return _freeze
 
 
-def kst_noon(days: int = 0) -> dt.datetime:
-    """12:00 KST on (today + days), as UTC. Fixed mid-day so tests never straddle a KST midnight."""
+def kst_at(week: int = 0, weekday: int = 0, hour: int = 12) -> dt.datetime:
+    """A KST moment in the future, so login tokens minted while 'frozen' never look expired.
+
+    week 0 = the week that starts on the next Monday; weekday 0 = Monday. A battle created during
+    week N ends at kst_at(N + 1, 0, 0).
+    """
     today = clock.kst_date(dt.datetime.now(dt.timezone.utc))
-    day = today + dt.timedelta(days=days)
-    return dt.datetime.combine(day, dt.time(12, 0), tzinfo=clock.KST).astimezone(dt.timezone.utc)
+    monday = today + dt.timedelta(days=7 - today.weekday()) + dt.timedelta(weeks=week)
+    day = monday + dt.timedelta(days=weekday)
+    return dt.datetime.combine(day, dt.time(hour), tzinfo=clock.KST).astimezone(dt.timezone.utc)
 
 
-def signup(client, email, tier=None, nickname=None):
-    body = {"email": email, "password": PASSWORD}
-    if nickname:
-        body["nickname"] = nickname
-    r = client.post("/auth/signup", json=body)
+def signup(client, email, nickname=None, tier="intermediate"):
+    r = client.post(
+        "/auth/signup",
+        json={"email": email, "nickname": nickname or "u_" + email.split("@")[0], "password": PASSWORD, "tier": tier},
+    )
     assert r.status_code == 201, r.text
-    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    if tier:
-        assert client.put("/me/tier", json={"tier": tier}, headers=headers).status_code == 200
-    return headers, r.json()["user"]
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}, r.json()["user"]
 
 
-def new_photo(client, headers):
-    r = client.post("/photos", files={"file": ("shot.png", PNG, "image/png")}, headers=headers)
-    assert r.status_code == 201, r.text
-    return r.json()["photo_id"]
+def group(client, n, tier="intermediate", prefix="cook"):
+    """n signed-up users in the same skill group: [(headers, user), ...]."""
+    return [signup(client, f"{prefix}{i}@test.com", nickname=f"{prefix}{i}", tier=tier) for i in range(n)]
 
 
-def post_body(photo_id, **overrides):
-    body = {
-        "photo_id": photo_id,
-        "caption": "오늘 처음으로 파스타를 만들어봤어요!",
-        "title": "크림 파스타",
-        "ingredients": [
-            {"name": "파스타 면", "amount": "1인분"},
-            {"name": "생크림", "amount": "200ml"},
-            {"name": "마늘"},
-        ],
-        "steps": [{"text": "파스타를 8분 삶는다"}, {"text": "마늘을 볶고 생크림을 붓는다"}],
-        "cost_krw": 4500,
-        "cook_minutes": 20,
-        "difficulty": "intermediate",
-    }
-    body.update(overrides)
-    return body
-
-
-def make_post(client, headers, **overrides):
-    """Upload a fresh photo and publish a post with it. Returns the full PostCreatedOut."""
-    r = client.post("/posts", json=post_body(new_photo(client, headers), **overrides), headers=headers)
-    assert r.status_code == 201, r.text
+def current_battle(client, headers, tier=None):
+    r = client.get("/battles/current", params={"tier": tier} if tier else None, headers=headers)
+    assert r.status_code == 200, r.text
     return r.json()
+
+
+def join(client, headers, battle_id, dish="치즈 스크램블 에그", description="우유를 조금 넣었어요"):
+    return client.post(
+        f"/battles/{battle_id}/entries",
+        data={"dish_name": dish, "description": description},
+        files={"photo": ("dish.png", PNG, "image/png")},
+        headers=headers,
+    )
 
 
 def set_user(user_id, **values):

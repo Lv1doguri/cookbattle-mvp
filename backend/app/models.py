@@ -10,8 +10,8 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -19,7 +19,7 @@ from sqlalchemy.types import TypeDecorator
 
 from . import clock
 from .database import Base
-from .enums import Category, ShopCategory, Tier
+from .enums import Category, Tier, Tool
 
 
 class UTCDateTime(TypeDecorator):
@@ -58,101 +58,123 @@ def _enum(enum_cls):
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
-        CheckConstraint("coins >= 0", name="ck_users_coins_nonneg"),
-        CheckConstraint("xp >= 0", name="ck_users_xp_nonneg"),
+        CheckConstraint("points >= 0", name="ck_users_points_nonneg"),
+        CheckConstraint("total_points >= points", name="ck_users_total_ge_balance"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(100))
-    nickname: Mapped[str] = mapped_column(String(30))
-    handle: Mapped[str] = mapped_column(String(30), unique=True, index=True)
-    bio: Mapped[str] = mapped_column(String(200), default="")
-    tier: Mapped[Optional[Tier]] = mapped_column(_enum(Tier), nullable=True)
-    xp: Mapped[int] = mapped_column(Integer, default=0)
-    coins: Mapped[int] = mapped_column(Integer, default=0)
+    nickname: Mapped[str] = mapped_column(String(16))
+    avatar_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    tier: Mapped[Tier] = mapped_column(_enum(Tier))
+    # 정보 수정에서 실력을 바꾸면 "다음 대결부터" 적용: next_tier becomes tier once next_tier_at passes.
+    next_tier: Mapped[Optional[Tier]] = mapped_column(_enum(Tier), nullable=True)
+    next_tier_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
+
+    points: Mapped[int] = mapped_column(Integer, default=0)  # spendable balance
+    total_points: Mapped[int] = mapped_column(Integer, default=0)  # lifetime earned; drives level
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
 
-class Follow(Base):
-    __tablename__ = "follows"
-    __table_args__ = (CheckConstraint("follower_id != followee_id", name="ck_follow_not_self"),)
-
-    follower_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    followee_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True, index=True)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
-
-
-class Photo(Base):
-    """A photo taken with the in-app camera. captured_at is stamped by the server."""
-
-    __tablename__ = "photos"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    filename: Mapped[str] = mapped_column(String(64), unique=True)
-    captured_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
+# Nicknames are unique ignoring case ("Yuri" == "yuri").
+Index("uq_users_nickname_lower", func.lower(User.nickname), unique=True)
 
 
 class Battle(Base):
-    """One battle per (KST day, tier)."""
+    """One battle per (week, skill group). Runs Monday 00:00 KST to next Monday 00:00 KST."""
 
     __tablename__ = "battles"
-    __table_args__ = (UniqueConstraint("date", "tier", name="uq_battle_date_tier"),)
+    __table_args__ = (UniqueConstraint("week_start", "tier", name="uq_battle_week_tier"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    date: Mapped[dt.date] = mapped_column(Date)
     tier: Mapped[Tier] = mapped_column(_enum(Tier))
     theme: Mapped[str] = mapped_column(String(40))
     description: Mapped[str] = mapped_column(String(120))
-    reward_xp: Mapped[int] = mapped_column(Integer)
-    reward_coins: Mapped[int] = mapped_column(Integer)
+    week_start: Mapped[dt.date] = mapped_column(Date)
     starts_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
     ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)
+    # Set once, when ranks and rank points have been handed out (or the battle was voided).
+    finalized_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
+    is_void: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
-class Post(Base):
-    """A cooking post. Every post carries its recipe (title/ingredients/steps/cost/time/difficulty)."""
+class Entry(Base):
+    """A user's submission to a battle (요리 인증). One per user per battle."""
 
-    __tablename__ = "posts"
-    __table_args__ = (
-        UniqueConstraint("battle_id", "author_id", name="uq_one_entry_per_battle"),
-        Index("ix_posts_battle_score", "battle_id", "battle_score"),
-    )
+    __tablename__ = "entries"
+    __table_args__ = (UniqueConstraint("battle_id", "user_id", name="uq_one_entry_per_battle"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    battle_id: Mapped[int] = mapped_column(ForeignKey("battles.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    dish_name: Mapped[str] = mapped_column(String(60))
+    description: Mapped[str] = mapped_column(String(500), default="")
+    photo_filename: Mapped[str] = mapped_column(String(64))
+    vote_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
+
+    # Filled in when the battle is finalized. rank stays null for void battles.
+    rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rank_points: Mapped[int] = mapped_column(Integer, default=0)
+    level_from: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    level_to: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    user: Mapped["User"] = relationship()
+    battle: Mapped["Battle"] = relationship()
+
+
+class Vote(Base):
+    """Primary key (battle_id, voter_id) is what enforces 1인 1표 per battle."""
+
+    __tablename__ = "votes"
+
+    battle_id: Mapped[int] = mapped_column(ForeignKey("battles.id"), primary_key=True)
+    voter_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("entries.id"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
+
+
+class Recipe(Base):
+    __tablename__ = "recipes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id"), unique=True)
-    battle_id: Mapped[Optional[int]] = mapped_column(ForeignKey("battles.id"), nullable=True)
+    entry_id: Mapped[Optional[int]] = mapped_column(ForeignKey("entries.id"), unique=True, nullable=True)
 
-    caption: Mapped[str] = mapped_column(Text, default="")
     title: Mapped[str] = mapped_column(String(60))
-    category: Mapped[Optional[Category]] = mapped_column(_enum(Category), nullable=True)
+    category: Mapped[Category] = mapped_column(_enum(Category), index=True)
     cost_krw: Mapped[int] = mapped_column(Integer, index=True)
     cook_minutes: Mapped[int] = mapped_column(Integer)
     difficulty: Mapped[Tier] = mapped_column(_enum(Tier))
+    win_label: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)  # "밥 요리 대결 1등"
+    photo_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
-    battle_score: Mapped[int] = mapped_column(Integer, default=0)
-    like_count: Mapped[int] = mapped_column(Integer, default=0)
     save_count: Mapped[int] = mapped_column(Integer, default=0)
     comment_count: Mapped[int] = mapped_column(Integer, default=0)
-    reward_xp: Mapped[int] = mapped_column(Integer, default=0)
-    reward_coins: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
 
     author: Mapped["User"] = relationship()
-    photo: Mapped["Photo"] = relationship()
     ingredients: Mapped[List["Ingredient"]] = relationship(
         cascade="all, delete-orphan", order_by="Ingredient.position"
     )
     steps: Mapped[List["Step"]] = relationship(cascade="all, delete-orphan", order_by="Step.position")
+    tools: Mapped[List["RecipeTool"]] = relationship(cascade="all, delete-orphan")
+
+
+class RecipeTool(Base):
+    __tablename__ = "recipe_tools"
+
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True)
+    tool: Mapped[Tool] = mapped_column(_enum(Tool), primary_key=True)
 
 
 class Ingredient(Base):
     __tablename__ = "ingredients"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id"), index=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), index=True)
     position: Mapped[int] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(40))
     amount: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
@@ -162,57 +184,42 @@ class Step(Base):
     __tablename__ = "steps"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id"), index=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), index=True)
     position: Mapped[int] = mapped_column(Integer)  # 1-based
     text: Mapped[str] = mapped_column(String(500))
 
 
-class Like(Base):
-    __tablename__ = "likes"
+class RecipeSave(Base):
+    __tablename__ = "recipe_saves"
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id"), primary_key=True, index=True)
-    # true if this like paid out XP to the author, so un-liking knows whether to take it back
-    xp_granted: Mapped[bool] = mapped_column(Boolean, default=False)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
 
-class Save(Base):
-    __tablename__ = "saves"
+class RecipeView(Base):
+    """Last time each user opened each recipe (메뉴 > 최근 본 레시피)."""
+
+    __tablename__ = "recipe_views"
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id"), primary_key=True, index=True)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True)
+    viewed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
 
 
-class Comment(Base):
-    __tablename__ = "comments"
+class Review(Base):
+    """A comment on a recipe. The design calls these 댓글 on the recipe and 후기 on the home screen."""
+
+    __tablename__ = "reviews"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id"), index=True)
-    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("comments.id"), nullable=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), index=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     text: Mapped[str] = mapped_column(String(500))
-    like_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
     author: Mapped["User"] = relationship()
-
-
-class CommentLike(Base):
-    __tablename__ = "comment_likes"
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    comment_id: Mapped[int] = mapped_column(ForeignKey("comments.id"), primary_key=True, index=True)
-
-
-class RecipeRating(Base):
-    __tablename__ = "recipe_ratings"
-    __table_args__ = (CheckConstraint("score BETWEEN 1 AND 5", name="ck_rating_range"),)
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id"), primary_key=True, index=True)
-    score: Mapped[int] = mapped_column(Integer)
+    recipe: Mapped["Recipe"] = relationship()
 
 
 class ShopItem(Base):
@@ -220,41 +227,32 @@ class ShopItem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(60))
-    category: Mapped[ShopCategory] = mapped_column(_enum(ShopCategory))
-    value_label: Mapped[str] = mapped_column(String(30))
-    value_krw: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    price_coins: Mapped[int] = mapped_column(Integer)
-    validity_days: Mapped[int] = mapped_column(Integer, default=90)
+    price_points: Mapped[int] = mapped_column(Integer)
+    required_level: Mapped[int] = mapped_column(Integer, default=1)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
-class Coupon(Base):
-    """A purchased coupon. Name/value are snapshots so later shop edits don't rewrite history."""
+class Exchange(Base):
+    """A gifticon exchange. MVP: nothing is actually sent, this is the saved 교환 내역."""
 
-    __tablename__ = "coupons"
+    __tablename__ = "exchanges"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     shop_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shop_items.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(60))
-    value_label: Mapped[str] = mapped_column(String(30))
-    value_krw: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    price_paid: Mapped[int] = mapped_column(Integer)
-    code: Mapped[str] = mapped_column(String(20), unique=True)
+    points_spent: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
-    expires_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
-    used_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
 
 
 class LedgerEntry(Base):
-    """Append-only audit trail for every XP/coin change (coins can become real coupons)."""
+    """Append-only audit trail for every point change (points can become real gifticons)."""
 
     __tablename__ = "ledger"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    xp_delta: Mapped[int] = mapped_column(Integer, default=0)
-    coin_delta: Mapped[int] = mapped_column(Integer, default=0)
+    points_delta: Mapped[int] = mapped_column(Integer)
     reason: Mapped[str] = mapped_column(String(40))
     ref_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     ref_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
