@@ -359,7 +359,10 @@ def test_finalization_ranks_ties_and_pays_points(client, freeze):
     ]
     assert [(r["rank"], r["tie"]) for r in result["top10"]] == [(1, "first"), (2, "tied"), (3, None), (4, None)]
     assert [r["is_me"] for r in result["top10"]] == [False, True, False, False]
-    assert [r["can_share_recipe"] for r in result["top10"]] == [True, False, False, False]
+    assert [r["is_winner"] for r in result["top10"]] == [True, False, False, False]  # tag on the 1등 row for everyone
+    assert [r["can_share_recipe"] for r in result["top10"]] == [False] * 4  # cook1 isn't the winner: no share button
+    winner_view = client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()
+    assert [r["can_share_recipe"] for r in winner_view["top10"]] == [True, False, False, False]  # only the winner's own row
     assert result["top10"][0]["submitted_at"] < result["top10"][1]["submitted_at"]
 
     # 2등 +4P: Lv.1 -> Lv.2, exactly the result mock-up
@@ -567,8 +570,8 @@ def test_shop_states_and_exchange(client):
     fresh = client.get("/shop", headers=a).json()
     assert fresh["points"] == 0 and fresh["level"] == 1
     assert [(i["name"], i["price_points"], i["required_level"], i["state"], i["points_short"]) for i in fresh["items"]] == [
+        ("커피 기프티콘", 1000, 1, "insufficient_points", 1000),  # the design's order, not price order
         ("학식 식권", 800, 1, "insufficient_points", 800),
-        ("커피 기프티콘", 1000, 1, "insufficient_points", 1000),
         ("편의점 상품권", 3000, 2, "locked", 0),
         ("치킨 기프티콘", 5000, 5, "locked", 0),
     ]

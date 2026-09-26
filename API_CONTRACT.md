@@ -58,7 +58,7 @@
 **결과** `GET /battles/{id}/result` (마감 전이면 409 `battle_not_finished`)
 - `podium`(시상대 1~3등), `top10`, `participants`.
 - `me`: `rank`, `rank_points`("+4P"), `level_from` → `level_to`, `leveled_up`("레벨 업! Lv.1 → Lv.2"), `can_share_recipe`.
-- `top10[].tie`: `first`="동점 · 먼저 제출", `tied`="동점", null=동점 아님 (`submitted_at`으로 "18:02" 표시). `can_share_recipe`는 1등 "레시피 공유" 표시용.
+- `top10[].tie`: `first`="동점 · 먼저 제출", `tied`="동점", null=동점 아님 (`submitted_at`으로 "18:02" 표시). 1등 행에는 "레시피 공유" 표시를 보여주세요(`is_winner`, 누가 봐도 true). **누를 수 있는 [레시피 공유] 버튼은 `can_share_recipe`가 true일 때만** — 내가 1등이고 아직 공유하지 않았을 때예요.
 - `status`가 `void`면 참가자가 3명 미만이라 순위가 없어요(`podium`, `top10`은 빈 배열, 참가 +1P는 지급됨).
 
 **Shop** `GET /shop` → `points`, `level`, `items[].state`: `available`=[교환] · `insufficient_points`=비활성 "N P 더 필요해요"(`points_short`) · `locked`=비활성 "Lv.`required_level`부터 교환 가능".

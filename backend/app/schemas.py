@@ -300,7 +300,8 @@ class ResultRow(BaseModel):
     submitted_at: dt.datetime
     tie: Optional[str]  # first = "먼저 제출" · tied = "동점" · null = 동점 아님
     is_me: bool
-    can_share_recipe: bool  # 1등이면 "레시피 공유 가능"
+    is_winner: bool  # 1등 행의 "레시피 공유" 표시(누가 봐도 true)
+    can_share_recipe: bool  # 내가 1등이고 아직 공유 안 했을 때만 true → 이때만 누를 수 있는 [레시피 공유] 버튼
 
 
 class ResultMe(BaseModel):

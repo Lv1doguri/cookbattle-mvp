@@ -257,7 +257,8 @@ def battle_result(battle_id: int, user: User = Depends(get_current_user), db: Se
                     submitted_at=e.created_at,
                     tie="tied" if same_as_prev else ("first" if same_as_next else None),
                     is_me=e.user_id == user.id,
-                    can_share_recipe=e.rank == 1 and e.id not in shared,
+                    is_winner=e.rank == 1,
+                    can_share_recipe=e.user_id == user.id and e.rank == 1 and e.id not in shared,
                 )
             )
 

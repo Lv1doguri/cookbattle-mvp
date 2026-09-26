@@ -32,7 +32,8 @@ def _item_out(item: ShopItem, level: int, points: int) -> ShopItemOut:
 @router.get("", response_model=ShopOut)
 def shop(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     level = level_for(user.total_points)
-    items = db.scalars(select(ShopItem).where(ShopItem.active.is_(True)).order_by(ShopItem.price_points, ShopItem.id))
+    # Registration order (커피 → 학식 → 편의점 → 치킨), which is the order the design lists them in.
+    items = db.scalars(select(ShopItem).where(ShopItem.active.is_(True)).order_by(ShopItem.id))
     return ShopOut(points=user.points, level=level, items=[_item_out(i, level, user.points) for i in items])
 
 
