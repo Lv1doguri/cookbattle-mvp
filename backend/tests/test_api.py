@@ -159,12 +159,17 @@ def test_avatar_upload(client):
     assert second != first and client.get(second).status_code == 200 and client.get(first).status_code == 404
 
 
-def test_signup_without_email_then_login_by_nickname(client):
-    """The signup screen has no email field, so email is optional and the nickname doubles as the login id."""
-    r = client.post("/auth/signup", json={"nickname": "자취생", "password": PASSWORD, "tier": "beginner"})
-    assert r.status_code == 201 and r.json()["user"]["email"] is None
+def test_signup_requires_email_and_nickname_login_still_works(client):
+    """The signup screen now requires an email, but login still accepts the nickname too
+    (falls back to a nickname lookup whenever the login field has no '@')."""
+    missing_email = client.post("/auth/signup", json={"nickname": "자취생", "password": PASSWORD, "tier": "beginner"})
+    assert missing_email.status_code == 422
+
+    r = client.post(
+        "/auth/signup", json={"email": "jachwi@test.com", "nickname": "자취생", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert r.status_code == 201 and r.json()["user"]["email"] == "jachwi@test.com"
     headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    assert client.post("/auth/signup", json={"nickname": "또다른", "password": PASSWORD, "tier": "beginner"}).status_code == 201
 
     assert client.post("/auth/login", json={"email": "자취생", "password": PASSWORD}).status_code == 200
     assert client.post("/auth/login", json={"email": "  자취생 ", "password": PASSWORD}).status_code == 200
