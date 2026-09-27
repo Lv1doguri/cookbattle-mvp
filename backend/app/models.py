@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -19,7 +20,7 @@ from sqlalchemy.types import TypeDecorator
 
 from . import clock
 from .database import Base
-from .enums import Category, Tier, Tool
+from .enums import BattleKind, Category, Tier, Tool
 
 
 class UTCDateTime(TypeDecorator):
@@ -65,7 +66,8 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     # 회원가입 화면에 이메일 칸이 없어서 선택값이에요. 없는 계정은 닉네임으로 로그인하고, 정보 수정에서 이메일을 추가할 수 있어요.
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
-    password_hash: Mapped[str] = mapped_column(String(100))
+    password_hash: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # null for Google-only accounts
+    google_sub: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
     nickname: Mapped[str] = mapped_column(String(16))
     avatar_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
@@ -95,18 +97,33 @@ class Photo(Base):
 
 
 class Battle(Base):
-    """One battle per (week, skill group). Runs Monday 00:00 KST to next Monday 00:00 KST."""
+    """One battle. Two kinds run in parallel:
+
+    - daily: one per (week, skill group), Monday 00:00 KST -> next Monday 00:00 KST.
+    - theme: one shared battle for everyone (tier is null), running THEME_COOKING_DAYS.
+
+    Both go cooking -> voting (a fixed VOTING_WINDOW after cook_ends_at) -> closed once
+    finalized. `ends_at` is the *cooking* deadline; voting happens between ends_at and
+    voting_ends_at, and finalize_due_battles() only runs once voting_ends_at has passed.
+    """
 
     __tablename__ = "battles"
-    __table_args__ = (UniqueConstraint("week_start", "tier", name="uq_battle_week_tier"),)
+    __table_args__ = (
+        # theme battles have tier=NULL, and SQLite treats NULLs as distinct in a UNIQUE
+        # constraint, so daily and theme each get their own partial unique index instead.
+        Index("uq_daily_battle_week_tier", "week_start", "tier", unique=True, sqlite_where=text("kind = 'daily'")),
+        Index("uq_theme_battle_week", "week_start", unique=True, sqlite_where=text("kind = 'theme'")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    tier: Mapped[Tier] = mapped_column(_enum(Tier))
+    kind: Mapped[BattleKind] = mapped_column(_enum(BattleKind), default=BattleKind.daily, index=True)
+    tier: Mapped[Optional[Tier]] = mapped_column(_enum(Tier), nullable=True)  # null for kind=theme (everyone)
     theme: Mapped[str] = mapped_column(String(40))
     description: Mapped[str] = mapped_column(String(120))
-    week_start: Mapped[dt.date] = mapped_column(Date)
+    week_start: Mapped[dt.date] = mapped_column(Date)  # theme battles: the cooking-period start date
     starts_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
-    ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)
+    ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)  # cooking deadline
+    voting_ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)
     # Set once, when ranks and rank points have been handed out (or the battle was voided).
     finalized_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
     is_void: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -125,6 +142,7 @@ class Entry(Base):
     dish_name: Mapped[str] = mapped_column(String(60))
     description: Mapped[str] = mapped_column(String(500), default="")
     vote_count: Mapped[int] = mapped_column(Integer, default=0)
+    notify_on_close: Mapped[bool] = mapped_column(Boolean, default=False)  # "대회 종료 시 알림 받기"
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
     # Filled in when the battle is finalized. rank stays null for void battles.

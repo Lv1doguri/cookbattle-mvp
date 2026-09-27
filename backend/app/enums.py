@@ -67,3 +67,18 @@ class CookTime(str, enum.Enum):
     le_15 = "le_15"
     le_30 = "le_30"
     ge_60 = "ge_60"
+
+
+class BattleKind(str, enum.Enum):
+    """daily: 실력 그룹별 주간 대결('오늘의 대결'). theme: 전체 공통 테마 대결(예: 망한 요리 대회)."""
+
+    daily = "daily"
+    theme = "theme"
+
+
+class BattlePhase(str, enum.Enum):
+    """cooking(참가 가능) -> voting(대회 종료 후 24시간, 투표만 가능) -> closed(집계 완료)."""
+
+    cooking = "cooking"
+    voting = "voting"
+    closed = "closed"

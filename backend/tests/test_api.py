@@ -3,7 +3,7 @@ import datetime as dt
 from app.database import SessionLocal
 from app.enums import Tier
 from app.models import Exchange, LedgerEntry, User
-from app.services.battles import get_or_create_battle, week_label
+from app.services.battles import get_or_create_daily_battle, get_or_create_theme_battle, week_label
 from app.services.points import level_for
 from sqlalchemy import func, select
 
@@ -15,10 +15,12 @@ def _iso(s: str) -> dt.datetime:
 
 
 def run_battle(client, freeze, votes_for=(2, 2, 1, 0)):
-    """One finished-voting battle in the 중급 group. votes_for[i] = votes cook_i receives.
+    """One battle in the 중급 group, cooked and voted on, left frozen 1 hour into its 24-hour
+    voting window. votes_for[i] = votes cook_i receives. cook0 submits first, cook1 second, ...
+    Voters are separate non-participants.
 
-    cook0 submits first, cook1 second, ... Voters are separate non-participants. Time is left
-    frozen mid-week; call freeze(kst_at(1, 0, 1)) afterwards to end the battle.
+    Callers should `freeze(kst_at(1, 1, 1))` afterwards (past the voting window) before checking
+    `/battles/{id}/result`.
     Returns (cooks, voters, battle_id, entry_ids).
     """
     freeze(kst_at(0, 2, 12))
@@ -31,7 +33,7 @@ def run_battle(client, freeze, votes_for=(2, 2, 1, 0)):
         r = join(client, headers, battle_id, dish=f"요리{i}")
         assert r.status_code == 201, r.text
         entry_ids.append(r.json()["entry"]["id"])
-    freeze(kst_at(0, 4, 12))
+    freeze(kst_at(1, 0, 1))  # cooking ended (kst_at(1, 0, 0)); now 1h into the voting window
     v = iter(voters)
     for entry_id, n in zip(entry_ids, votes_for):
         for _ in range(n):
@@ -250,15 +252,33 @@ def test_camera_upload_rate_limit(client):
 # ------------------------------------------------------------------ battles: setup
 def test_weekly_battle_schedule(client):
     with SessionLocal() as db:
-        battle = get_or_create_battle(db, Tier.intermediate, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
+        battle = get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
         assert battle.theme == "계란 요리" and battle.description == "계란이 메인인 든든한 한 끼"
         assert battle.starts_at == dt.datetime(2026, 9, 20, 15, 0, tzinfo=dt.timezone.utc)  # Mon 9/21 00:00 KST
         assert battle.ends_at == dt.datetime(2026, 9, 27, 15, 0, tzinfo=dt.timezone.utc)  # Mon 9/28 00:00 KST
-        beginner = get_or_create_battle(db, Tier.beginner, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
+        assert battle.voting_ends_at == dt.datetime(2026, 9, 28, 15, 0, tzinfo=dt.timezone.utc)  # + 24h
+        beginner = get_or_create_daily_battle(db, Tier.beginner, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
         assert beginner.id != battle.id and beginner.description == "간단한 계란 요리면 OK"
-        assert get_or_create_battle(db, Tier.intermediate, dt.datetime(2026, 9, 25, 3, 0, tzinfo=dt.timezone.utc)).id == battle.id
+        assert get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 25, 3, 0, tzinfo=dt.timezone.utc)).id == battle.id
     assert week_label(dt.date(2026, 9, 21)) == "9월 4주차"
     assert week_label(dt.date(2026, 8, 31)) == "9월 1주차"  # its Thursday is Sep 3
+
+
+def test_theme_battle_is_shared_across_tiers(client):
+    with SessionLocal() as db:
+        now = dt.datetime(2026, 9, 1, 3, 0, tzinfo=dt.timezone.utc)  # Tue 9/1 12:00 KST
+        theme = get_or_create_theme_battle(db, now)
+        assert theme.tier is None and theme.kind.value == "theme"
+        # same 3-day cooking cycle regardless of who's asking, and it's the same row every time
+        assert get_or_create_theme_battle(db, now + dt.timedelta(hours=1)).id == theme.id
+        assert theme.voting_ends_at == theme.ends_at + dt.timedelta(hours=24)
+
+    a, _ = signup(client, "a@test.com", tier="beginner")
+    b, _ = signup(client, "b@test.com", tier="advanced")
+    theme_a = client.get("/battles/current", params={"kind": "theme"}, headers=a).json()
+    theme_b = client.get("/battles/current", params={"kind": "theme"}, headers=b).json()
+    assert theme_a["id"] == theme_b["id"] and theme_a["tier"] is None and theme_a["tier_label"] is None
+    assert theme_a["is_my_group"] and theme_b["is_my_group"]  # everyone's group, regardless of tier
 
 
 def test_current_battle_and_joining(client, freeze):
@@ -308,7 +328,8 @@ def test_current_battle_and_joining(client, freeze):
 
 
 # ------------------------------------------------------------------ battles: voting
-def test_voting_rules(client, freeze):
+def test_voting_only_opens_after_cooking_ends(client, freeze):
+    """투표는 대회 종료 후 24시간 동안만 가능해요. 요리 기간에는 아무도 투표할 수 없어요."""
     freeze(kst_at(0, 2, 12))
     (c0, _), (c1, _), (c2, _) = group(client, 3, prefix="cook")
     voter, _ = signup(client, "voter@test.com", nickname="voter", tier="intermediate")
@@ -316,8 +337,15 @@ def test_voting_rules(client, freeze):
     battle_id = current_battle(client, c0)["id"]
     entry_ids = [join(client, h, battle_id, dish=f"요리{i}").json()["entry"]["id"] for i, h in enumerate((c0, c1, c2))]
 
+    cooking = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
+    assert cooking["phase"] == "cooking" and not cooking["can_vote"] and not cooking["has_voted"]
+    assert [e["state"] for e in cooking["items"]] == ["unavailable"] * 3  # nobody can vote yet
+    too_early = client.post(f"/entries/{entry_ids[0]}/vote", headers=voter)
+    assert too_early.status_code == 400 and too_early.json()["code"] == "voting_not_started"
+
+    freeze(kst_at(1, 0, 1))  # cooking ended at kst_at(1, 0, 0); now 1h into the 24h voting window
     listing = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
-    assert listing["participants"] == 3 and listing["can_vote"] and not listing["has_voted"] and listing["is_open"]
+    assert listing["phase"] == "voting" and listing["participants"] == 3 and listing["can_vote"]
     assert [e["state"] for e in listing["items"]] == ["votable"] * 3
     assert [e["dish_name"] for e in listing["items"]] == ["요리0", "요리1", "요리2"]  # submission order
     mine = client.get(f"/battles/{battle_id}/entries", headers=c0).json()["items"]
@@ -329,9 +357,12 @@ def test_voting_rules(client, freeze):
     assert client.post("/entries/999/vote", headers=voter).status_code == 404
 
     voted = client.post(f"/entries/{entry_ids[1]}/vote", headers=voter)
-    assert voted.status_code == 200 and voted.json() == {"entry_id": entry_ids[1], "vote_count": 1, "has_voted": True}
+    assert voted.status_code == 200
+    assert voted.json() == {"entry_id": entry_ids[1], "vote_count": 1, "has_voted": True, "points_awarded": 1}
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 1  # 투표하면 +1P
     again = client.post(f"/entries/{entry_ids[2]}/vote", headers=voter)
     assert again.status_code == 409 and again.json()["code"] == "already_voted"
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 1  # 두 번째는 안 줌
     after = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
     assert after["has_voted"] and after["my_vote_entry_id"] == entry_ids[1]
     assert [e["state"] for e in after["items"]] == ["vote_done", "voted", "vote_done"]
@@ -340,10 +371,10 @@ def test_voting_rules(client, freeze):
     other_group = client.get(f"/battles/{battle_id}/entries", headers=outsider).json()
     assert other_group["can_vote"] is False and {e["state"] for e in other_group["items"]} == {"unavailable"}
 
-    freeze(kst_at(1, 0, 1))
+    freeze(kst_at(1, 1, 1))  # voting window (24h from kst_at(1, 0, 0)) has closed
     late, _ = signup(client, "late@test.com", nickname="late", tier="intermediate")
     closed = client.post(f"/entries/{entry_ids[0]}/vote", headers=late)
-    assert closed.status_code == 400 and closed.json()["code"] == "battle_closed"
+    assert closed.status_code == 400 and closed.json()["code"] == "voting_closed"
 
 
 # ------------------------------------------------------------------ battles: results
@@ -351,7 +382,7 @@ def test_finalization_ranks_ties_and_pays_points(client, freeze):
     cooks, voters, battle_id, entry_ids = run_battle(client, freeze, votes_for=(2, 2, 1, 0))
     assert client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()["code"] == "battle_not_finished"
 
-    freeze(kst_at(1, 0, 1))
+    freeze(kst_at(1, 1, 1))  # past the 24h voting window
     result = client.get(f"/battles/{battle_id}/result", headers=cooks[1][0]).json()
     assert result["status"] == "ranked" and result["participants"] == 4 and result["tier_label"] == "중급"
     assert [(r["rank"], r["user"]["nickname"], r["vote_count"]) for r in result["podium"]] == [
@@ -403,7 +434,7 @@ def test_finalization_ranks_ties_and_pays_points(client, freeze):
 
 def test_void_battle_when_fewer_than_three_join(client, freeze):
     cooks, voters, battle_id, _ = run_battle(client, freeze, votes_for=(1, 0))
-    freeze(kst_at(1, 0, 1))
+    freeze(kst_at(1, 1, 1))  # past the 24h voting window
     result = client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()
     assert result["status"] == "void" and result["participants"] == 2
     assert result["podium"] == [] and result["top10"] == []
@@ -437,6 +468,70 @@ def test_home_stats_and_history(client, freeze):
     assert [(r["recipe_name"], r["text"]) for r in home["reviews"]] == [("김치볶음밥", "김치가 신 게 더 맛있어요")]
     assert home["review_total"] == 1 and home["me"]["review_count"] == 1
     assert [r["recipe_id"] for r in client.get("/me/reviews", headers=a).json()] == [1]
+
+
+def test_notify_on_close_toggle(client, freeze):
+    """참가 완료 화면의 [대회 종료 시 알림 받기]. MVP라 저장만 하고 실제 알림은 안 나가요."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="beginner")
+    b, _ = signup(client, "b@test.com", tier="beginner")
+    battle_id = current_battle(client, a)["id"]
+    entry_id = join(client, a, battle_id).json()["entry"]["id"]
+    assert current_battle(client, a)["my_entry"]["notify_on_close"] is False
+
+    on = client.post(f"/entries/{entry_id}/notify", headers=a)
+    assert on.status_code == 200 and on.json() == {"notify_on_close": True}
+    assert current_battle(client, a)["my_entry"]["notify_on_close"] is True
+    off = client.post(f"/entries/{entry_id}/notify", headers=a)  # toggles back off
+    assert off.json() == {"notify_on_close": False}
+
+    assert client.post(f"/entries/{entry_id}/notify", headers=b).status_code == 403  # not their entry
+    assert client.post("/entries/999/notify", headers=a).status_code == 404
+
+
+def test_home_history_survives_a_theme_battle_entry(client, freeze):
+    """테마 대결은 tier가 없어서 홈 이력에 그대로 넣으면 죽기 쉬워요 — 안 죽는지 확인."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="beginner")
+    theme_id = client.get("/battles/current", params={"kind": "theme"}, headers=a).json()["id"]
+    join(client, a, theme_id)
+    home = client.get("/me/home", headers=a).json()
+    assert home["history"] == [{
+        "battle_id": theme_id, "entry_id": home["history"][0]["entry_id"], "title": home["history"][0]["title"],
+        "theme": home["history"][0]["theme"], "week_label": home["history"][0]["week_label"],
+        "tier": None, "tier_label": None, "status": "in_progress", "rank": None,
+    }]
+
+
+def test_battle_home_bundles_daily_theme_and_voting_card(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    home = client.get("/battles/home", headers=a).json()
+    assert home["daily"]["kind"] == "daily" and home["daily"]["tier"] == "intermediate"
+    assert home["theme"]["kind"] == "theme" and home["theme"]["tier"] is None and home["theme"]["is_my_group"]
+    assert home["voting"] is None  # nothing to vote on yet
+    assert client.get("/battles/home").status_code == 401
+
+    cooks, _, battle_id, _ = run_battle(client, freeze, votes_for=(1, 1, 1))  # leaves time mid-voting-window
+    home2 = client.get("/battles/home", headers=cooks[0][0]).json()
+    assert home2["voting"] == {
+        "battle_id": battle_id, "kind": "daily", "title": home2["voting"]["title"],
+        "group_label": "중급", "participants": 3, "hours_left": home2["voting"]["hours_left"], "has_voted": False,
+    }
+    assert 1 <= home2["voting"]["hours_left"] <= 23
+
+
+# ------------------------------------------------------------------ google auth
+def test_google_auth_requires_configuration(client):
+    r = client.post("/auth/google", json={"id_token": "whatever"})
+    assert r.status_code == 500 and r.json()["code"] == "google_not_configured"
+
+
+def test_google_auth_rejects_bad_token(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "google_client_id", "fake-client-id.apps.googleusercontent.com")
+    r = client.post("/auth/google", json={"id_token": "not-a-real-jwt"})
+    assert r.status_code == 401 and r.json()["code"] == "invalid_google_token"
 
 
 # ------------------------------------------------------------------ recipes
@@ -538,9 +633,9 @@ def test_winner_shares_recipe(client, freeze):
     }
 
     early = client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=winner)
-    assert early.status_code == 403 and early.json()["code"] == "not_winner"  # battle still running
+    assert early.status_code == 403 and early.json()["code"] == "not_winner"  # not finalized yet (still voting)
 
-    freeze(kst_at(1, 0, 1))
+    freeze(kst_at(1, 1, 1))  # past the 24h voting window
     result = client.get(f"/battles/{battle_id}/result", headers=winner).json()
     assert result["me"]["can_share_recipe"] is True
     assert client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=runner_up).json()["code"] == "not_your_entry"

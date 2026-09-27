@@ -91,11 +91,11 @@ def home(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
         HistoryItem(
             battle_id=e.battle_id,
             entry_id=e.id,
-            title=battle_title(e.battle.theme),
+            title=battle_title(e.battle),
             theme=e.battle.theme,
             week_label=week_label(e.battle.week_start),
             tier=e.battle.tier,
-            tier_label=TIER_LABEL[e.battle.tier],
+            tier_label=TIER_LABEL[e.battle.tier] if e.battle.tier else None,
             status="void" if e.battle.is_void else ("ranked" if e.rank is not None else "in_progress"),
             rank=e.rank,
         )

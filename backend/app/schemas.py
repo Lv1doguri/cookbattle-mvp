@@ -3,7 +3,7 @@ from typing import Annotated, List, Optional
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
 
-from .enums import Category, Tier, Tool
+from .enums import BattleKind, BattlePhase, Category, Tier, Tool
 
 Nickname = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=16)]
 Name40 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
@@ -32,6 +32,13 @@ class LoginIn(BaseModel):
     # 이메일을 넣으세요. 이메일 없이 가입한 계정은 같은 칸에 닉네임을 넣으면 돼요('@'가 있으면 이메일로 봐요).
     email: str = Field(min_length=1, max_length=255)
     password: str = Field(max_length=200)
+
+
+class GoogleAuthIn(BaseModel):
+    id_token: str
+    # 이 구글 계정으로 처음 가입하는 경우에만 쓰여요. 디자인엔 구글 가입 시 실력 선택 화면이 없어서,
+    # 안 보내면 초급으로 시작해요(정보 수정에서 바꿀 수 있어요) — API_CONTRACT.md 참고.
+    tier: Optional[Tier] = None
 
 
 class NicknameAvailableOut(BaseModel):
@@ -93,8 +100,8 @@ class HistoryItem(BaseModel):
     title: str  # "계란 요리 대결"
     theme: str
     week_label: str  # "9월 3주차"
-    tier: Tier
-    tier_label: str
+    tier: Optional[Tier]  # 테마 대결(전체 공통)이면 null
+    tier_label: Optional[str]
     status: str  # in_progress | ranked | void
     rank: Optional[int]  # 순위가 없으면 화면에는 "참가"
 
@@ -231,6 +238,7 @@ class EntryOut(BaseModel):
     author: UserBrief
     vote_count: int
     created_at: dt.datetime
+    notify_on_close: bool  # "대회 종료 시 알림 받기"를 눌렀는지
     # votable(투표) | mine(투표 불가) | voted(투표함) | vote_done(투표 완료) | unavailable(투표 기간/그룹 아님)
     state: str
 
@@ -246,19 +254,22 @@ class LastResultOut(BaseModel):
 
 class BattleOut(BaseModel):
     id: int
-    tier: Tier
-    tier_label: str
+    kind: BattleKind
+    tier: Optional[Tier]  # kind=theme이면 null (전체 공통)
+    tier_label: Optional[str]
     title: str  # "계란 요리 대결"
     theme: str  # "계란 요리"
     description: str
     week_label: str
     starts_at: dt.datetime
-    ends_at: dt.datetime
-    seconds_left: int
-    days_left: int  # "남은 기간 3일"
+    ends_at: dt.datetime  # 요리(참가) 기간 마감
+    voting_ends_at: dt.datetime  # 투표 마감 (ends_at + 24시간)
+    phase: BattlePhase
+    seconds_left: int  # 지금 단계(요리 또는 투표)가 끝날 때까지 남은 초
+    days_left: int  # "남은 기간 3일" (요리 기간 기준)
     server_time: dt.datetime
     participants: int
-    is_open: bool
+    is_open: bool  # 요리 기간이 아직 안 끝났는지 (참가 가능 여부의 기준)
     is_my_group: bool
     has_joined: bool
     can_join: bool
@@ -268,15 +279,36 @@ class BattleOut(BaseModel):
 
 class EntryListOut(BaseModel):
     battle_id: int
-    tier: Tier
-    tier_label: str
+    kind: BattleKind
+    tier: Optional[Tier]
+    tier_label: Optional[str]
     title: str
     participants: int
-    is_open: bool
-    can_vote: bool  # 내 그룹 대결이고 투표 기간이면 true
+    phase: BattlePhase
+    can_vote: bool  # 내 그룹(또는 테마) 대결이고 투표 기간(대회 종료 후 24시간)이면 true
     has_voted: bool
     my_vote_entry_id: Optional[int]
     items: List[EntryOut]
+
+
+class VotingCardOut(BaseModel):
+    """대결 홈의 '지난 대회 투표하기' 카드. 투표 가능한 지난 대회가 없으면 null이에요."""
+
+    battle_id: int
+    kind: BattleKind
+    title: str
+    group_label: Optional[str]  # tier_label, 테마 대결이면 null
+    participants: int
+    hours_left: int  # 투표 마감까지 남은 시간(반올림)
+    has_voted: bool
+
+
+class BattleHomeOut(BaseModel):
+    """대결 홈 화면 한 번에: 내 그룹의 오늘의 대결 + 테마 대결 + 지난 대회 투표 카드."""
+
+    daily: BattleOut
+    theme: BattleOut
+    voting: Optional[VotingCardOut]
 
 
 class JoinOut(BaseModel):
@@ -289,6 +321,13 @@ class VoteOut(BaseModel):
     entry_id: int
     vote_count: int
     has_voted: bool
+    points_awarded: int  # 투표하면 +1P
+
+
+class NotifyOut(BaseModel):
+    """MVP: 실제 알림 발송은 없고, 원하는지 여부만 저장돼요."""
+
+    notify_on_close: bool
 
 
 class ResultRow(BaseModel):
@@ -318,8 +357,9 @@ class ResultMe(BaseModel):
 
 class ResultOut(BaseModel):
     battle_id: int
-    tier: Tier
-    tier_label: str
+    kind: BattleKind
+    tier: Optional[Tier]
+    tier_label: Optional[str]
     title: str
     theme: str
     week_label: str

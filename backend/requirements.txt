@@ -8,3 +8,5 @@ python-multipart==0.0.9
 PyJWT==2.9.0
 bcrypt==4.2.0
 tzdata==2024.2
+google-auth==2.34.0
+requests==2.32.3

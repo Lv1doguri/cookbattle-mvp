@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     max_upload_bytes: int = 8 * 1024 * 1024
     cors_origins: str = "*"
+    google_client_id: str = ""
 
 
 settings = Settings()

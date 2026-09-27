@@ -14,6 +14,7 @@ def level_threshold(level: int) -> int:
 
 
 PARTICIPATION_POINTS = 1  # paid when the entry is submitted
+VOTE_POINTS = 1  # paid once per battle when a vote is cast, during the voting window
 RANK_POINTS = {1: 5, 2: 4, 3: 3}  # paid on top of participation when the battle is finalized
 MIN_PARTICIPANTS = 3  # fewer than this and the battle is void (no ranking, no rank points)
 
@@ -26,7 +27,11 @@ SAVING_PER_COOKING_KRW = 4000
 PHOTO_TTL = dt.timedelta(hours=1)
 MAX_UPLOADS_PER_HOUR = 30
 
-# ---- weekly group battles -------------------------------------------------
+# ---- voting (after a battle's cooking period ends) -------------------------
+# 대회가 끝나면 바로 집계하지 않고, 24시간 동안 투표만 받은 뒤에 집계해요.
+VOTING_WINDOW = dt.timedelta(hours=24)
+
+# ---- weekly group battles ("오늘의 대결") -----------------------------------
 # A battle runs Monday 00:00 KST -> next Monday 00:00 KST, one per skill group.
 BATTLE_EPOCH = dt.date(2026, 8, 31)  # a Monday; week 0 uses BATTLE_THEMES[0]
 BATTLE_THEMES = [
@@ -78,6 +83,18 @@ BATTLE_THEMES = [
         Tier.intermediate: "크림·시럽까지 직접 만든 디저트",
         Tier.advanced: "반죽부터 직접 만든 디저트",
     },
+]
+
+# ---- theme battles ("테마 대결") ---------------------------------------------
+# 실력 그룹 구분 없이 전체가 함께 참가하는 대결. 요일별 대결보다 며칠 더 길게 진행돼요.
+# (디자인에 그룹별인지 전체 공통인지 명시가 없어서 "전체 공통"으로 가정했어요 — API_CONTRACT.md 참고)
+THEME_EPOCH = dt.date(2026, 8, 31)  # 요일별 대결과 같은 기준일
+THEME_COOKING_DAYS = 3
+THEME_BATTLES = [
+    {"theme": "망한 요리 대회", "description": "누구보다 처참하게 실패해보세요"},
+    {"theme": "한 그릇 요리 대회", "description": "설거지거리 하나로 끝내는 한 그릇 요리"},
+    {"theme": "자취 아이돌 대회", "description": "자취방에서 가장 자랑하고 싶은 요리"},
+    {"theme": "매운맛 대회", "description": "맵기로 승부하는 요리"},
 ]
 
 # ---- shop seed: (name, price_points, required_level) ----------------------
