@@ -27,6 +27,7 @@ export default function Login() {
   return (
     <div className="auth-page">
       <h1>🍳 CookBattle</h1>
+      <p>요리하고, 공유하고, 대결하다</p>
       <form onSubmit={handleSubmit} className="auth-form">
         <input type="email" placeholder="이메일" value={email} onChange={(e) => setEmail(e.target.value)} required />
         <input

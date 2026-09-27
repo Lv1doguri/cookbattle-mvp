@@ -28,6 +28,7 @@ export default function Signup() {
   return (
     <div className="auth-page">
       <h1>🍳 CookBattle</h1>
+      <p>요리왕에서 쓸 이름을 알려주세요</p>
       <form onSubmit={handleSubmit} className="auth-form">
         <input
           type="text"

@@ -35,6 +35,7 @@ export default function TodayTopics() {
       <div className="topic-grid">
         {topics.map((topic) => (
           <Link key={topic.id} to={`/topics/${topic.id}`} className="topic-card">
+            <span className="topic-icon">🍳</span>
             <h2>{topic.name}</h2>
             <p>{topic.description}</p>
             <div className="topic-meta">
