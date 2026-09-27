@@ -17,7 +17,7 @@ def _check_password_bytes(v: str) -> str:
 
 # ------------------------------------------------------------------ auth / me
 class SignupIn(BaseModel):
-    email: Optional[EmailStr] = None  # 회원가입 화면에 이메일 칸이 없어서 선택. 나중에 정보 수정에서 추가 가능
+    email: EmailStr
     nickname: Nickname
     password: str = Field(min_length=8, max_length=72)
     tier: Tier

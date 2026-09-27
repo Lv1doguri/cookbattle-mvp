@@ -59,8 +59,8 @@ def nickname_available(
 
 @router.post("/signup", response_model=AuthOut, status_code=201)
 def signup(body: SignupIn, db: Session = Depends(get_db)):
-    """회원가입 화면의 [가입하기]. 가입하면 바로 로그인된 상태(토큰)로 돌아와요. 이메일은 선택이에요."""
-    email = body.email.strip().lower() if body.email else None
+    """회원가입 화면의 [가입하기]. 가입하면 바로 로그인된 상태(토큰)로 돌아와요."""
+    email = body.email.strip().lower()
     if nickname_taken(db, body.nickname):
         raise NICKNAME_TAKEN
     if email is not None and db.scalar(select(User.id).where(User.email == email)) is not None:
