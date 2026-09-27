@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Screen, Header, TopBar, BottomAction } from '../components/Screen';
 import { Button, Field } from '../components/ui';
@@ -7,25 +7,52 @@ import { SKILLS } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 export default function Signup() {
-  const { signup, isNicknameTaken } = useApp();
+  const { signup, checkNickname } = useApp();
   const navigate = useNavigate();
   const [nickname, setNickname] = useState('');
   const [password, setPassword] = useState('');
   const [skill, setSkill] = useState('intermediate');
   const [touched, setTouched] = useState(false);
+  const [nickTaken, setNickTaken] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [serverError, setServerError] = useState('');
+  const checkSeq = useRef(0);
+
+  useEffect(() => {
+    const seq = ++checkSeq.current;
+    if (nickname.trim().length < 2) return setNickTaken(false);
+    const t = setTimeout(async () => {
+      try {
+        const taken = await checkNickname(nickname);
+        if (seq === checkSeq.current) setNickTaken(taken);
+      } catch {
+        /* validated again on submit */
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [nickname, checkNickname]);
 
   const nickError =
     touched && nickname.trim().length === 0 ? '닉네임을 입력해 주세요'
-      : nickname && isNicknameTaken(nickname) ? '이미 사용 중인 닉네임입니다'
+      : nickTaken ? '이미 사용 중인 닉네임입니다'
         : '';
   const pwError = touched && password.length < 8 ? '비밀번호는 8자 이상이에요' : '';
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
     setTouched(true);
-    if (!nickname.trim() || isNicknameTaken(nickname) || password.length < 8) return;
-    signup({ nickname: nickname.trim(), skill });
-    navigate('/onboarding', { replace: true });
+    setServerError('');
+    if (!nickname.trim() || nickTaken || password.length < 8) return;
+    setSubmitting(true);
+    try {
+      await signup({ nickname: nickname.trim(), skill, password });
+      navigate('/onboarding', { replace: true });
+    } catch (err) {
+      if (err.code === 'nickname_taken') setNickTaken(true);
+      else setServerError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -73,7 +100,8 @@ export default function Signup() {
         </div>
 
         <BottomAction>
-          <Button type="submit">가입하기</Button>
+          {serverError && <p className="field-msg" style={{ color: 'var(--danger, #d64545)' }}>{serverError}</p>}
+          <Button type="submit" disabled={submitting}>{submitting ? '가입 중…' : '가입하기'}</Button>
         </BottomAction>
       </form>
     </Screen>

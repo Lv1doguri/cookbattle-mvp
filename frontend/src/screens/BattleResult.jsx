@@ -1,8 +1,8 @@
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Screen, TopBar, BottomAction } from '../components/Screen';
 import Icon, { CrownArt } from '../components/Icon';
 import { Button, Coin } from '../components/ui';
-import { LAST_RESULT } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 const PODIUM = {
@@ -12,10 +12,46 @@ const PODIUM = {
 };
 
 export default function BattleResult() {
-  const { user } = useApp();
-  const r = LAST_RESULT;
-  const nameOf = (p) => (p.me ? `${user.nickname} (나)` : p.name);
-  const top3 = [2, 1, 3].map((rank) => r.ranking.find((p) => p.rank === rank));
+  const { fetchResult } = useApp();
+  const [params] = useSearchParams();
+  const battleId = params.get('battle');
+  const [r, setR] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!battleId) return setError('아직 마감된 대결 결과가 없어요');
+    fetchResult(battleId).then(setR).catch((e) => setError(e.message));
+  }, [battleId, fetchResult]);
+
+  if (error) {
+    return (
+      <Screen>
+        <TopBar title="대결 결과" back="/battle" />
+        <div className="body pad"><p className="muted" style={{ padding: '24px 0' }}>{error}</p></div>
+      </Screen>
+    );
+  }
+  if (!r) return null;
+
+  const nameOf = (p) => (p.me ? `나 (${p.name})` : p.name);
+
+  if (r.isVoid) {
+    return (
+      <Screen>
+        <TopBar title="대결 결과" back="/battle" />
+        <div className="body pad">
+          <p className="result-meta">{r.title} · {r.group} · 참가자 {r.participants}명</p>
+          <div className="card" style={{ marginTop: 12 }}>
+            <p>대결이 무효 처리됐어요.</p>
+            <p className="muted">참가자가 3명 미만이라 순위를 매기지 않아요. 참가 포인트는 그대로 지급됐어요.</p>
+          </div>
+        </div>
+        <BottomAction className="bottom-action--tight"><Button to="/battle">확인</Button></BottomAction>
+      </Screen>
+    );
+  }
+
+  const top3 = [2, 1, 3].map((rank) => r.ranking.find((p) => p.rank === rank)).filter(Boolean);
 
   return (
     <Screen>
@@ -41,13 +77,15 @@ export default function BattleResult() {
 
       <div className="body">
         <div className="stack pad" style={{ gap: 10 }}>
-          <div className="card my-rank">
-            <span className="my-rank__text">
-              <span className="my-rank__label">내 순위</span>
-              <span className="my-rank__value">{r.myRank}등</span>
-            </span>
-            <span className="my-rank__reward"><Coin />+{r.reward}P</span>
-          </div>
+          {r.joined && (
+            <div className="card my-rank">
+              <span className="my-rank__text">
+                <span className="my-rank__label">내 순위</span>
+                <span className="my-rank__value">{r.myRank}등</span>
+              </span>
+              <span className="my-rank__reward"><Coin />+{r.reward}P</span>
+            </div>
+          )}
 
           {r.levelUp && (
             <Link to="/shop" className="levelup">

@@ -1,13 +1,23 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Screen, Header, TopBar, IconButton } from '../components/Screen';
 import TabBar from '../components/TabBar';
 import Icon from '../components/Icon';
 import { Avatar, Badge, Button, ProgressBar } from '../components/ui';
-import { BATTLE_HISTORY, skillLabel, won } from '../data/mock';
+import { skillLabel, won } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 export default function Home() {
-  const { user, submission } = useApp();
+  const { user, submission, fetchHome } = useApp();
+  const [history, setHistory] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchHome().then((h) => { if (alive) setHistory(h.history); }).catch(() => { if (alive) setHistory([]); });
+    return () => { alive = false; };
+  }, [fetchHome]);
+
+  if (!user) return null;
 
   return (
     <Screen>
@@ -68,16 +78,22 @@ export default function Home() {
                 <Badge tone="neutral" className="badge--lg">출품됨</Badge>
               </div>
             )}
-            {BATTLE_HISTORY.map((h) => (
-              <div key={h.id} className="history__row">
-                <span className="ico ico--round" style={{ background: h.tint, color: h.ink }}><Icon name={h.icon} size={20} /></span>
-                <div className="history__text">
-                  <div className="history__title">{h.title}</div>
-                  <div className="history__meta">{h.meta}</div>
+            {history === null ? (
+              <p className="muted" style={{ padding: '10px 0' }}>불러오는 중…</p>
+            ) : history.length === 0 && !submission ? (
+              <p className="muted" style={{ padding: '10px 0' }}>아직 참가한 대결이 없어요</p>
+            ) : (
+              history.map((h) => (
+                <div key={h.id} className="history__row">
+                  <span className="ico ico--round" style={{ background: '#EFE9D2', color: '#8A6A38' }}><Icon name="egg" size={20} /></span>
+                  <div className="history__text">
+                    <div className="history__title">{h.title}</div>
+                    <div className="history__meta">{h.meta}</div>
+                  </div>
+                  <Badge tone={h.medal ? 'gold' : 'neutral'} className="badge--lg">{h.result}</Badge>
                 </div>
-                <Badge tone={h.medal ? 'gold' : 'neutral'} className="badge--lg">{h.result}</Badge>
-              </div>
-            ))}
+              ))
+            )}
           </section>
 
           <Button to="/profile/edit" variant="secondary"><Icon name="edit" size={18} />정보 수정</Button>

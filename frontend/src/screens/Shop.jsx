@@ -1,20 +1,42 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Screen, Header, TopBar } from '../components/Screen';
 import TabBar from '../components/TabBar';
 import Icon from '../components/Icon';
 import { Badge, Button, Coin, PointPill, ProgressBar } from '../components/ui';
+import { adaptShopItem } from '../api/adapt';
 import { SHOP_ITEMS, won } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
+// The API doesn't carry icon/color; match by name to the design's fixed 4 items for visuals.
+function withVisuals(item) {
+  const mock = SHOP_ITEMS.find((m) => m.name === item.name) ?? SHOP_ITEMS[0];
+  return { ...item, icon: mock.icon, bg: mock.bg, ink: mock.ink };
+}
+
 export default function Shop() {
-  const { user, redeem } = useApp();
+  const { user, fetchShop, redeem } = useApp();
+  const [items, setItems] = useState(null);
   const [selected, setSelected] = useState(null); // item being confirmed
   const [done, setDone] = useState(null); // item just redeemed
+  const [error, setError] = useState('');
 
-  const confirm = () => {
-    if (redeem(selected)) setDone(selected);
-    setSelected(null);
+  useEffect(() => {
+    fetchShop().then((raw) => setItems(raw.map(adaptShopItem).map(withVisuals))).catch(() => setItems([]));
+  }, [fetchShop]);
+
+  const confirm = async () => {
+    setError('');
+    try {
+      const r = await redeem(selected.id);
+      setDone({ ...selected, points: r.points });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSelected(null);
+    }
   };
+
+  if (!user) return null;
 
   return (
     <Screen>
@@ -33,29 +55,30 @@ export default function Shop() {
 
       <div className="body">
         <h2 className="shop-title">기프티콘</h2>
-        <div className="gift-grid">
-          {SHOP_ITEMS.map((item) => {
-            const locked = user.level < item.minLevel;
-            const short = item.price - user.points;
-            return (
+        {items === null ? (
+          <p className="muted" style={{ padding: '16px' }}>불러오는 중…</p>
+        ) : (
+          <div className="gift-grid">
+            {items.map((item) => (
               <div key={item.id} className="g">
                 <div className="gi" style={{ background: `linear-gradient(135deg, ${item.bg[0]}, ${item.bg[1]})`, color: item.ink }}>
-                  <Icon name={item.icon} size={40} strokeWidth={1.8} style={locked ? { opacity: 0.55 } : undefined} />
-                  {locked && <span className="gi__lock"><Icon name="lock" size={14} strokeWidth={2.4} /></span>}
+                  <Icon name={item.icon} size={40} strokeWidth={1.8} style={item.locked ? { opacity: 0.55 } : undefined} />
+                  {item.locked && <span className="gi__lock"><Icon name="lock" size={14} strokeWidth={2.4} /></span>}
                 </div>
                 <div className="gn">{item.name}</div>
                 <div className="gp">{won(item.price)}P</div>
-                {locked ? (
+                {item.locked ? (
                   <button type="button" className="gb off" disabled>Lv.{item.minLevel}부터 교환 가능</button>
-                ) : short > 0 ? (
-                  <button type="button" className="gb off" disabled>{won(short)}P 더 필요해요</button>
+                ) : item.short > 0 ? (
+                  <button type="button" className="gb off" disabled>{won(item.short)}P 더 필요해요</button>
                 ) : (
                   <button type="button" className="gb" onClick={() => setSelected(item)}>교환</button>
                 )}
               </div>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
+        {error && <p className="muted" style={{ color: 'var(--danger, #d64545)' }}>{error}</p>}
         <p className="note" style={{ marginBottom: 20 }}>포인트는 대결 참가(+1P)와 순위 보상으로 모여요</p>
       </div>
 
@@ -95,7 +118,7 @@ export default function Shop() {
             <p className="dialog__body">{done.name}을 교환했어요.<br />교환 내역이 저장됐어요.</p>
             <div className="dialog__remain">
               <span>남은 포인트</span>
-              <b><Coin />{won(user.points)}P</b>
+              <b><Coin />{won(done.points)}P</b>
             </div>
             <p className="dialog__fine">MVP 단계에서는 실제 기프티콘이 발송되지 않아요</p>
             <Button onClick={() => setDone(null)} style={{ marginTop: 18 }} autoFocus>확인</Button>

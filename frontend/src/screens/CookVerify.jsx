@@ -1,29 +1,44 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { Screen, Header, TopBar, BottomAction } from '../components/Screen';
 import Icon, { EggArt } from '../components/Icon';
 import { Button, Field } from '../components/ui';
-import { BATTLES, skillLabel } from '../data/mock';
+import { skillLabel } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 export default function CookVerify() {
-  const { user, draftPhoto, submission, submitEntry } = useApp();
+  const { user, draftPhoto, submission, submitEntry, fetchBattle } = useApp();
   const navigate = useNavigate();
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
   const [touched, setTouched] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [serverError, setServerError] = useState('');
+  const [topic, setTopic] = useState('');
+
+  useEffect(() => {
+    fetchBattle().then((b) => setTopic(b.topic)).catch(() => {});
+  }, [fetchBattle]);
 
   // One entry per battle
   if (submission) return <Navigate to="/battle/done" replace />;
 
   const nameError = touched && !name.trim() ? '요리명을 입력해 주세요' : '';
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
     setTouched(true);
+    setServerError('');
     if (!name.trim()) return;
-    submitEntry({ name: name.trim(), description: desc.trim() });
-    navigate('/battle/done', { replace: true });
+    setSubmitting(true);
+    try {
+      await submitEntry({ name: name.trim(), description: desc.trim() });
+      navigate('/battle/done', { replace: true });
+    } catch (err) {
+      setServerError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -33,7 +48,7 @@ export default function CookVerify() {
           <TopBar title="요리 인증" back="/battle" />
           <div className="verify-context">
             <EggArt size={18} yolk="#D9B85C" outline="#C2650F" />
-            {BATTLES[user.skill].topic} 대결 · {skillLabel(user.skill)} 그룹
+            {topic} 대결 · {skillLabel(user.skill)} 그룹
           </div>
         </Header>
 
@@ -63,7 +78,8 @@ export default function CookVerify() {
         </div>
 
         <BottomAction>
-          <Button type="submit">제출</Button>
+          {serverError && <p className="field-msg" style={{ color: 'var(--danger, #d64545)' }}>{serverError}</p>}
+          <Button type="submit" disabled={submitting}>{submitting ? '제출 중…' : '제출'}</Button>
         </BottomAction>
       </form>
     </Screen>

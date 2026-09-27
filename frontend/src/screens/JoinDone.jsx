@@ -1,8 +1,8 @@
+import { useEffect, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { Screen } from '../components/Screen';
 import Icon, { EggArt } from '../components/Icon';
 import { Button, Coin } from '../components/ui';
-import { BATTLES } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 const CONFETTI = [
@@ -19,7 +19,13 @@ function timeAgo(ts) {
 }
 
 export default function JoinDone() {
-  const { user, submission } = useApp();
+  const { submission, fetchBattle } = useApp();
+  const [topic, setTopic] = useState('');
+
+  useEffect(() => {
+    fetchBattle().then((b) => setTopic(b.topic)).catch(() => {});
+  }, [fetchBattle]);
+
   if (!submission) return <Navigate to="/battle" replace />;
 
   return (
@@ -40,7 +46,7 @@ export default function JoinDone() {
         <h1 className="done-title">참가 완료!</h1>
         <span className="reward-pill"><Coin size={24} />+1P 적립</span>
         <p className="done-body">
-          {BATTLES[user.skill].topic} 대결에 출품했어요.<br />대결이 끝나면 결과를 알려드릴게요.
+          {topic} 대결에 출품했어요.<br />대결이 끝나면 결과를 알려드릴게요.
         </p>
 
         <div className="card entry-card">

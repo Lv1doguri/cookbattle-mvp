@@ -29,6 +29,9 @@ function RequireAuth() {
 }
 
 export default function App() {
+  const { booting } = useApp();
+  if (booting) return null; // restoring a saved login before deciding what to render
+
   return (
     <>
       {import.meta.env.DEV && <DevNav />}

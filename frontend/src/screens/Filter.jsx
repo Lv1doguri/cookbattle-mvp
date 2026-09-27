@@ -1,14 +1,21 @@
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Screen, Header, TopBar, BottomAction } from '../components/Screen';
 import Icon from '../components/Icon';
 import { Button, Chip } from '../components/ui';
-import { FILTER_GROUPS, RECIPES, applyFilters } from '../data/mock';
+import { FILTER_GROUPS } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 export default function Filter() {
-  const { filters, setFilters, resetFilters } = useApp();
+  const { filters, setFilters, resetFilters, fetchRecipeCount } = useApp();
   const navigate = useNavigate();
-  const count = applyFilters(RECIPES, filters).length;
+  const [count, setCount] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetchRecipeCount({ filters }).then((n) => { if (alive) setCount(n); }).catch(() => { if (alive) setCount(0); });
+    return () => { alive = false; };
+  }, [filters, fetchRecipeCount]);
 
   const toggle = (groupId, optId) =>
     setFilters((f) => {
@@ -53,7 +60,7 @@ export default function Filter() {
 
       <BottomAction className="bottom-action--fade">
         <Button onClick={() => navigate('/recipes')} disabled={count === 0}>
-          {count === 0 ? '조건에 맞는 레시피가 없어요' : `레시피 ${count}개 보기`}
+          {count === null ? '불러오는 중…' : count === 0 ? '조건에 맞는 레시피가 없어요' : `레시피 ${count}개 보기`}
         </Button>
       </BottomAction>
     </Screen>

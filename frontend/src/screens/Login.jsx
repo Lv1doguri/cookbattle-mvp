@@ -11,14 +11,22 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
-    if (!email.includes('@')) return setError('이메일 형식을 확인해 주세요');
+    if (!email.trim()) return setError('이메일 또는 닉네임을 입력해 주세요');
     if (password.length < 8) return setError('비밀번호는 8자 이상이에요');
     setError('');
-    login(email);
-    navigate('/home', { replace: true });
+    setSubmitting(true);
+    try {
+      await login(email.trim(), password);
+      navigate('/home', { replace: true });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -32,8 +40,8 @@ export default function Login() {
 
         <form className="card login-form" onSubmit={onSubmit} noValidate>
           <Field
-            id="login-email" label="이메일" type="email" autoComplete="email"
-            className="field--soft" placeholder="you@university.ac.kr"
+            id="login-email" label="이메일" type="text" autoComplete="username"
+            className="field--soft" placeholder="you@university.ac.kr (또는 닉네임)"
             value={email} onChange={(e) => setEmail(e.target.value)}
           />
           <Field
@@ -41,7 +49,7 @@ export default function Login() {
             className="field--soft" error={error}
             value={password} onChange={(e) => setPassword(e.target.value)}
           />
-          <Button type="submit" style={{ marginTop: 6 }}>로그인</Button>
+          <Button type="submit" disabled={submitting} style={{ marginTop: 6 }}>{submitting ? '로그인 중…' : '로그인'}</Button>
         </form>
 
         <p className="login-foot">

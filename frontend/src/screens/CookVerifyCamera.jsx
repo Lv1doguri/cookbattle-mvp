@@ -2,14 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Screen, IconButton } from '../components/Screen';
 import Icon from '../components/Icon';
-import { BATTLES } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 // In-app camera only (no gallery upload) so entries are cooked, not downloaded.
 // Uses getUserMedia; falls back to a placeholder frame when no camera / permission denied.
 export default function CookVerifyCamera() {
-  const { user, setDraftPhoto } = useApp();
+  const { setDraftPhoto, fetchBattle } = useApp();
   const navigate = useNavigate();
+  const [topic, setTopic] = useState('');
+
+  useEffect(() => {
+    fetchBattle().then((b) => setTopic(b.topic)).catch(() => {});
+  }, [fetchBattle]);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const [facing, setFacing] = useState('environment');
@@ -86,7 +90,7 @@ export default function CookVerifyCamera() {
         <IconButton label="촬영 취소" variant="glass" onClick={() => navigate('/battle')}>
           <Icon name="close" size={22} strokeWidth={2.4} />
         </IconButton>
-        <span className="cam-pill">{BATTLES[user.skill].topic} 대결 인증샷</span>
+        <span className="cam-pill">{topic} 대결 인증샷</span>
         <IconButton label={flash ? '플래시 끄기' : '플래시 켜기'} variant="glass" onClick={() => setFlash((f) => !f)}>
           <Icon name="flash" size={20} fill={flash ? 'currentColor' : 'none'} />
         </IconButton>
