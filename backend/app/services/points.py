@@ -1,52 +1,103 @@
 import datetime as dt
+from typing import Optional
 
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .. import rules
-from ..models import PointLog, User
-from ..timeutil import utcnow
+from ..content import POINTS_EXPIRE_AFTER, level_threshold
+from ..models import LedgerEntry, User
+from ..schemas import Progress
 
 
-def award(db: Session, user: User, points: int, reason: str, ref: str, memo: str = "") -> bool:
-    """포인트 적립 (누적 + 보유 둘 다 증가). 같은 (user, reason, ref)는 한 번만.
-    DB에서 '현재값 + n'으로 더해서 동시에 적립돼도 값이 덮어써지지 않는다. commit은 호출하는 쪽에서."""
-    if points <= 0:
-        return False
-    exists = (
-        db.query(PointLog.id)
-        .filter(PointLog.user_id == user.id, PointLog.reason == reason, PointLog.ref == ref)
-        .first()
+def level_for(total_points: int) -> int:
+    level = 1
+    while level_threshold(level + 1) <= total_points:
+        level += 1
+    return level
+
+
+def progress_for(user: User) -> Progress:
+    level = level_for(user.total_points)
+    next_points = level_threshold(level + 1)
+    return Progress(
+        level=level,
+        points=user.points,
+        total_points=user.total_points,
+        level_start_points=level_threshold(level),
+        next_level_points=next_points,
+        points_to_next_level=next_points - user.total_points,
     )
-    if exists:
+
+
+def grant_points(
+    db: Session,
+    user: User,
+    amount: int,
+    *,
+    reason: str,
+    ref_type: Optional[str] = None,
+    ref_id: Optional[int] = None,
+) -> None:
+    """Add points (balance and lifetime total) in one SQL UPDATE and write a ledger row. Caller commits."""
+    if amount <= 0:
+        raise ValueError("grant_points needs a positive amount")
+    db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(points=User.points + amount, total_points=User.total_points + amount)
+    )
+    db.add(LedgerEntry(user_id=user.id, points_delta=amount, reason=reason, ref_type=ref_type, ref_id=ref_id))
+    db.flush()
+    db.refresh(user)
+
+
+def spend_points(
+    db: Session,
+    user: User,
+    amount: int,
+    *,
+    reason: str,
+    ref_type: Optional[str] = None,
+    ref_id: Optional[int] = None,
+) -> bool:
+    """Subtract from the balance only if it covers `amount`, in a single UPDATE (no read-then-write race).
+
+    Lifetime total_points is untouched, so spending never lowers the level.
+    Returns False (and changes nothing) when the balance is too low. Caller commits.
+    """
+    result = db.execute(
+        update(User).where(User.id == user.id, User.points >= amount).values(points=User.points - amount)
+    )
+    if result.rowcount != 1:
         return False
-    db.add(PointLog(user_id=user.id, points=points, reason=reason, ref=ref, memo=memo))
-    user.total_points = User.total_points + points
-    user.points = User.points + points
-    db.flush()  # 이후 user.total_points를 읽으면 DB에서 새 값을 다시 읽어 온다
+    db.add(LedgerEntry(user_id=user.id, points_delta=-amount, reason=reason, ref_type=ref_type, ref_id=ref_id))
+    db.flush()
+    db.refresh(user)
     return True
 
 
-def expire_points(db: Session, user: User) -> int:
-    """POINT_EXPIRY_DAYS가 지난 적립분을 보유(상점용) 포인트에서 소멸시킨다.
-    누적 포인트(total_points, 레벨 계산용)는 줄지 않는다. commit은 호출하는 쪽에서."""
-    cutoff = utcnow() - dt.timedelta(days=rules.POINT_EXPIRY_DAYS)
-    logs = (
-        db.query(PointLog)
-        .filter(
-            PointLog.user_id == user.id, PointLog.created_at < cutoff,
-            PointLog.expired.is_(False), PointLog.points > 0,
+def expire_points(db: Session, user: User, now: dt.datetime) -> int:
+    """Claw back spendable balance earned more than POINTS_EXPIRE_AFTER ago (lifetime total/level
+    are untouched). Called lazily (on /me, /me/home, /shop) rather than by a scheduler. Idempotent:
+    each positive ledger row is only ever counted once (`expired` flag)."""
+    cutoff = now - POINTS_EXPIRE_AFTER
+    rows = db.scalars(
+        select(LedgerEntry).where(
+            LedgerEntry.user_id == user.id,
+            LedgerEntry.created_at < cutoff,
+            LedgerEntry.expired.is_(False),
+            LedgerEntry.points_delta > 0,
         )
-        .all()
-    )
-    if not logs:
+    ).all()
+    if not rows:
         return 0
-    total = sum(l.points for l in logs)
-    for l in logs:
-        l.expired = True
-    deduct = min(total, user.points or 0)  # 이미 상점에서 써버린 만큼은 다시 깎지 않음
+    total = sum(r.points_delta for r in rows)
+    for r in rows:
+        r.expired = True
+    deduct = min(total, user.points)  # never claw back points already spent
     if deduct > 0:
-        user.points = User.points - deduct
-        db.add(PointLog(user_id=user.id, points=-deduct, reason="expire", ref=f"expire:{utcnow():%Y%m%d}",
-                        memo=f"{rules.POINT_EXPIRY_DAYS}일 경과로 포인트 소멸"))
-    db.flush()
+        db.execute(update(User).where(User.id == user.id).values(points=User.points - deduct))
+        db.add(LedgerEntry(user_id=user.id, points_delta=-deduct, reason="expire", expired=True))
+    db.commit()
+    db.refresh(user)
     return deduct

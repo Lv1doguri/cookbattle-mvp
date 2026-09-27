@@ -1,322 +1,315 @@
 import datetime as dt
+from typing import List, Optional
 
 from sqlalchemy import (
-    JSON,
     Boolean,
-    Column,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     String,
-    Text,
     UniqueConstraint,
-    false,
+    func,
+    text,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
-from . import rules
+from . import clock
 from .database import Base
-from .timeutil import today, utcnow
+from .enums import BattleKind, Category, Tier, Tool
+
+
+class UTCDateTime(TypeDecorator):
+    """SQLite drops tzinfo; this stores naive UTC and always hands back aware UTC."""
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("naive datetime not allowed; use timezone-aware UTC")
+        return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return value.replace(tzinfo=dt.timezone.utc)
+
+
+def _now() -> dt.datetime:
+    return clock.utcnow()  # looked up at call time so tests can patch clock.utcnow
+
+
+def _enum(enum_cls):
+    return SAEnum(
+        enum_cls,
+        native_enum=False,
+        length=20,
+        values_callable=lambda e: [m.value for m in e],
+        validate_strings=True,
+    )
 
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("points >= 0", name="ck_users_points_nonneg"),
+        CheckConstraint("total_points >= points", name="ck_users_total_ge_balance"),
+    )
 
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)  # 로그인 ID
-    nickname = Column(String, unique=True, index=True, nullable=False)  # 표시 이름 (중복 불가)
-    password_hash = Column(String, nullable=False)
-    skill = Column(String, nullable=False)  # rules.SKILLS 키 (low/mid/high) = 대결 그룹, 가입 후 변경 불가
-    total_points = Column(Integer, default=0, nullable=False)  # 누적 포인트 → 레벨 계산용 (차감되지 않음)
-    points = Column(Integer, default=0, nullable=False)  # 보유 포인트 → 상점에서 사용 (교환 시 차감)
-    is_admin = Column(Boolean, default=False, nullable=False)
-    invite_code = Column(String, unique=True, index=True, nullable=False)
-    invited_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    tutorial_step = Column(Integer, default=0, nullable=False)  # 중간 이탈 시 이어보기용
-    tutorial_completed = Column(Boolean, default=False, nullable=False)
-    notifications_enabled = Column(Boolean, default=True, nullable=False)
-    token_version = Column(Integer, default=0, nullable=False)  # 올리면 기존 로그인 토큰 전부 무효
-    created_at = Column(DateTime, default=utcnow)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # 회원가입 화면에 이메일 칸이 없어서 선택값이에요. 없는 계정은 닉네임으로 로그인하고, 정보 수정에서 이메일을 추가할 수 있어요.
+    email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # null for Google-only accounts
+    google_sub: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    nickname: Mapped[str] = mapped_column(String(16))
+    avatar_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
-    submissions = relationship("Submission", back_populates="user")
+    tier: Mapped[Tier] = mapped_column(_enum(Tier))
+    # 정보 수정에서 실력을 바꾸면 "다음 대결부터" 적용: next_tier becomes tier once next_tier_at passes.
+    next_tier: Mapped[Optional[Tier]] = mapped_column(_enum(Tier), nullable=True)
+    next_tier_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
 
-    @property
-    def level(self) -> int:
-        return rules.level_for(self.total_points or 0)
+    points: Mapped[int] = mapped_column(Integer, default=0)  # spendable balance
+    total_points: Mapped[int] = mapped_column(Integer, default=0)  # lifetime earned; drives level
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
 
-class Category(Base):
-    """대결 카테고리 풀. 대결이 새로 열릴 때 여기서 랜덤으로 뽑힌다."""
+# Nicknames are unique ignoring case ("Yuri" == "yuri").
+Index("uq_users_nickname_lower", func.lower(User.nickname), unique=True)
 
-    __tablename__ = "categories"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False)
-    description = Column(String, default="")
-    kind = Column(String, default="league", nullable=False)  # league | fail (망한 요리 대회용 주제)
-    is_active = Column(Boolean, default=True, nullable=False)
+class Photo(Base):
+    """A photo taken with the in-app camera. captured_at is stamped by the server at upload."""
+
+    __tablename__ = "photos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(64), unique=True)
+    # Perceptual hash (dHash, hex) for catching a re-photographed/reused image across any past
+    # upload, on top of the existing camera-only + 1-hour-expiry + single-use protections.
+    phash: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    captured_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
 
 
 class Battle(Base):
-    """대결 1회 (리그: 요리 1일+투표 1일, 망한 요리 대회: 요리 3일+투표 1일). group마다 동시에 1개만 진행.
-    - 리그 대결: group = low/mid/high (같은 실력끼리)
-    - 망한 요리 대회: group = "fail" (리그 구분 없이 전체)
-    기간: start_date ~ vote_start_date 전날 = 요리 기간 / vote_start_date ~ end_date = 투표 기간"""
+    """One battle. Two kinds run in parallel:
+
+    - daily: one per (week, skill group), Monday 00:00 KST -> next Monday 00:00 KST.
+    - theme: one shared battle for everyone (tier is null), running THEME_COOKING_DAYS.
+
+    Both go cooking -> voting (a fixed VOTING_WINDOW after cook_ends_at) -> closed once
+    finalized. `ends_at` is the *cooking* deadline; voting happens between ends_at and
+    voting_ends_at, and finalize_due_battles() only runs once voting_ends_at has passed.
+    """
 
     __tablename__ = "battles"
-
-    id = Column(Integer, primary_key=True, index=True)
-    group = Column(String, nullable=False, index=True)  # low/mid/high 또는 fail
-    kind = Column(String, default="league", nullable=False)  # league | fail
-    category_id = Column(Integer, ForeignKey("categories.id"), nullable=False)
-    start_date = Column(Date, nullable=False)
-    vote_start_date = Column(Date, nullable=True)  # 투표 시작일 (null이면 start + COOKING_DAYS)
-    end_date = Column(Date, nullable=False)
-    verification_keyword = Column(String, nullable=False)  # 인증샷에 같이 찍는 단어
-    is_closed = Column(Boolean, default=False, nullable=False)
-    is_void = Column(Boolean, default=False, nullable=False)  # 참가자 부족으로 무효
-    closed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=utcnow)
-
-    category = relationship("Category")
-    submissions = relationship("Submission", back_populates="battle")
-
-    @property
-    def voting_starts(self):
-        return self.vote_start_date or (self.start_date + dt.timedelta(days=rules.cooking_days_for(self.kind or "league")))
-
-    @property
-    def phase(self) -> str:
-        """cooking(사진 올리기) → voting(참가자 투표) → closed"""
-        if self.is_closed:
-            return "closed"
-        return "cooking" if today() < self.voting_starts else "voting"
-
-
-# 그룹당 진행 중(is_closed=0) 대결은 DB 차원에서도 1개만 (동시 요청으로 대결이 2개 생기는 것 방지)
-Index("uq_open_battle_per_group", Battle.group, unique=True, sqlite_where=Battle.is_closed == false())
-
-
-class Submission(Base):
-    __tablename__ = "submissions"
-    __table_args__ = (UniqueConstraint("battle_id", "user_id", name="uq_one_entry_per_battle"),)
-
-    id = Column(Integer, primary_key=True, index=True)
-    battle_id = Column(Integer, ForeignKey("battles.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    title = Column(String, nullable=False)  # 요리명
-    description = Column(Text, default="")
-    ingredient_cost = Column(Integer, nullable=True)  # 재료비(원), 절약 식비 계산용 (선택)
-    is_hidden = Column(Boolean, default=False, nullable=False)
-    ai_status = Column(String, nullable=True)  # passed | failed(advisory) | skipped | error
-    ai_result = Column(JSON, nullable=True)  # AI 판별 상세
-    created_at = Column(DateTime, default=utcnow)
-
-    battle = relationship("Battle", back_populates="submissions")
-    user = relationship("User", back_populates="submissions")
-    images = relationship(
-        "SubmissionImage",
-        back_populates="submission",
-        order_by="SubmissionImage.position",
-        cascade="all, delete-orphan",
+    __table_args__ = (
+        # theme battles have tier=NULL, and SQLite treats NULLs as distinct in a UNIQUE
+        # constraint, so daily and theme each get their own partial unique index instead.
+        Index("uq_daily_battle_week_tier", "week_start", "tier", unique=True, sqlite_where=text("kind = 'daily'")),
+        Index("uq_theme_battle_week", "week_start", unique=True, sqlite_where=text("kind = 'theme'")),
     )
 
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[BattleKind] = mapped_column(_enum(BattleKind), default=BattleKind.daily, index=True)
+    tier: Mapped[Optional[Tier]] = mapped_column(_enum(Tier), nullable=True)  # null for kind=theme (everyone)
+    theme: Mapped[str] = mapped_column(String(40))
+    description: Mapped[str] = mapped_column(String(120))
+    week_start: Mapped[dt.date] = mapped_column(Date)  # theme battles: the cooking-period start date
+    starts_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
+    ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)  # cooking deadline
+    voting_ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)
+    # Set once, when ranks and rank points have been handed out (or the battle was voided).
+    finalized_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
+    is_void: Mapped[bool] = mapped_column(Boolean, default=False)
 
-class SubmissionImage(Base):
-    __tablename__ = "submission_images"
 
-    id = Column(Integer, primary_key=True)
-    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False, index=True)
-    path = Column(String, nullable=False)
-    position = Column(Integer, default=0, nullable=False)
-    shot_type = Column(String, nullable=True)  # rules.SHOT_TYPES 키 (front/keyword/top/...)
-    phash = Column(String, nullable=True, index=True)  # 지각 해시 → 같은 사진 재사용 차단
-    taken_at = Column(DateTime, nullable=True)  # EXIF 촬영 시각 (없으면 null)
+class Entry(Base):
+    """A user's submission to a battle (요리 인증). One per user per battle."""
 
-    submission = relationship("Submission", back_populates="images")
+    __tablename__ = "entries"
+    __table_args__ = (UniqueConstraint("battle_id", "user_id", name="uq_one_entry_per_battle"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    battle_id: Mapped[int] = mapped_column(ForeignKey("battles.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id"), unique=True)  # a photo backs one entry only
+    dish_name: Mapped[str] = mapped_column(String(60))
+    description: Mapped[str] = mapped_column(String(500), default="")
+    vote_count: Mapped[int] = mapped_column(Integer, default=0)
+    notify_on_close: Mapped[bool] = mapped_column(Boolean, default=False)  # "대회 종료 시 알림 받기"
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
+
+    # Filled in when the battle is finalized. rank stays null for void battles.
+    rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rank_points: Mapped[int] = mapped_column(Integer, default=0)
+    level_from: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    level_to: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    user: Mapped["User"] = relationship()
+    battle: Mapped["Battle"] = relationship()
+    photo: Mapped["Photo"] = relationship()
+
+
+class EntryComment(Base):
+    """A comment + 1-5 star rating on a battle entry (배틀 작품 평가). One per user per entry."""
+
+    __tablename__ = "entry_comments"
+    __table_args__ = (UniqueConstraint("entry_id", "user_id", name="uq_one_comment_per_entry"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("entries.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    text: Mapped[str] = mapped_column(String(500))
+    rating: Mapped[int] = mapped_column(Integer)  # 1-5
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
+    updated_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
+
+    user: Mapped["User"] = relationship()
 
 
 class Vote(Base):
-    """1인 1표 (대결당)."""
+    """Primary key (battle_id, voter_id) is what enforces 1인 1표 per battle."""
 
     __tablename__ = "votes"
-    __table_args__ = (UniqueConstraint("battle_id", "voter_id", name="uq_one_vote_per_battle"),)
 
-    id = Column(Integer, primary_key=True, index=True)
-    battle_id = Column(Integer, ForeignKey("battles.id"), nullable=False, index=True)
-    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False, index=True)
-    voter_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=utcnow)
-
-
-class Comment(Base):
-    """대결 작품 평가: 댓글 + 별점(1~5). 한 사람이 한 작품에 1개 (수정 가능)."""
-
-    __tablename__ = "comments"
-    __table_args__ = (UniqueConstraint("submission_id", "user_id", name="uq_one_review_per_submission"),)
-
-    id = Column(Integer, primary_key=True)
-    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    content = Column(Text, nullable=False)
-    rating = Column(Integer, nullable=True)  # 1~5 (이전 버전 댓글은 null)
-    created_at = Column(DateTime, default=utcnow)
-    updated_at = Column(DateTime, nullable=True)
-
-    user = relationship("User")
-
-
-class Report(Base):
-    __tablename__ = "reports"
-    __table_args__ = (UniqueConstraint("submission_id", "reporter_id", name="uq_one_report_per_user"),)
-
-    id = Column(Integer, primary_key=True)
-    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False, index=True)
-    reporter_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    reason = Column(String, default="")
-    created_at = Column(DateTime, default=utcnow)
-
-
-class PointLog(Base):
-    """포인트 적립 기록. (user, reason, ref) 유니크 → 같은 보상 중복 지급 없음."""
-
-    __tablename__ = "point_logs"
-    __table_args__ = (UniqueConstraint("user_id", "reason", "ref", name="uq_point_once"),)
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    points = Column(Integer, nullable=False)
-    reason = Column(String, nullable=False)  # participation / rank / vote / streak / recipe_complete / review / invite / invited / signup / first_battle / expire
-    ref = Column(String, nullable=False)  # "battle:3", "recipe:5", "week:2026-39", "user:7"
-    memo = Column(String, default="")
-    expired = Column(Boolean, default=False, nullable=False)  # True면 POINT_EXPIRY_DAYS 경과로 보유 포인트에서 이미 회수됨
-    created_at = Column(DateTime, default=utcnow)
+    battle_id: Mapped[int] = mapped_column(ForeignKey("battles.id"), primary_key=True)
+    voter_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("entries.id"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
 
 class Recipe(Base):
     __tablename__ = "recipes"
 
-    id = Column(Integer, primary_key=True)
-    title = Column(String, nullable=False)
-    description = Column(Text, default="")
-    ingredients = Column(JSON, default=list)  # [{"name": "김치", "amount": "1컵", "price": 1500}]
-    steps = Column(JSON, default=list)  # ["김치를 잘게 썬다", ...]
-    estimated_cost = Column(Integer, nullable=True)  # 재료별 가격 합계 (자동 계산)
-    cook_minutes = Column(Integer, nullable=True)  # 조리 시간(분)
-    difficulty = Column(String, nullable=True)  # rules.RECIPE_DIFFICULTIES 키 (easy/normal/hard)
-    food_type = Column(String, nullable=True, index=True)  # rules.RECIPE_FOOD_TYPES 키
-    tags = Column(JSON, default=list)  # rules.RECIPE_TAGS 중에서 (예: ["자취 필수"])
-    tools = Column(String, default="")
-    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    source_submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=True, unique=True)
-    is_official = Column(Boolean, default=False, nullable=False)
-    image_path = Column(String, nullable=True)  # 사진 1장
-    created_at = Column(DateTime, default=utcnow)
-    updated_at = Column(DateTime, nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    entry_id: Mapped[Optional[int]] = mapped_column(ForeignKey("entries.id"), unique=True, nullable=True)
 
-    author = relationship("User")
-    source_submission = relationship("Submission")
+    title: Mapped[str] = mapped_column(String(60))
+    category: Mapped[Category] = mapped_column(_enum(Category), index=True)
+    cost_krw: Mapped[int] = mapped_column(Integer, index=True)
+    cook_minutes: Mapped[int] = mapped_column(Integer)
+    difficulty: Mapped[Tier] = mapped_column(_enum(Tier))
+    win_label: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)  # "밥 요리 대결 1등"
+    photo_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    is_essential: Mapped[bool] = mapped_column(Boolean, default=False, index=True)  # "자취 필수" 칩
+
+    save_count: Mapped[int] = mapped_column(Integer, default=0)
+    comment_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
+
+    author: Mapped["User"] = relationship()
+    ingredients: Mapped[List["Ingredient"]] = relationship(
+        cascade="all, delete-orphan", order_by="Ingredient.position"
+    )
+    steps: Mapped[List["Step"]] = relationship(cascade="all, delete-orphan", order_by="Step.position")
+    tools: Mapped[List["RecipeTool"]] = relationship(cascade="all, delete-orphan")
+
+
+class RecipeTool(Base):
+    __tablename__ = "recipe_tools"
+
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True)
+    tool: Mapped[Tool] = mapped_column(_enum(Tool), primary_key=True)
+
+
+class Ingredient(Base):
+    __tablename__ = "ingredients"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(40))
+    amount: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+
+class Step(Base):
+    __tablename__ = "steps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer)  # 1-based
+    text: Mapped[str] = mapped_column(String(500))
 
 
 class RecipeSave(Base):
     __tablename__ = "recipe_saves"
-    __table_args__ = (UniqueConstraint("recipe_id", "user_id", name="uq_save_once"),)
 
-    id = Column(Integer, primary_key=True)
-    recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    created_at = Column(DateTime, default=utcnow)
-
-    recipe = relationship("Recipe")
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
 
 class RecipeView(Base):
-    """최근 본 레시피 (사용자·레시피당 1행, 볼 때마다 시각 갱신)."""
+    """Last time each user opened each recipe (메뉴 > 최근 본 레시피)."""
 
     __tablename__ = "recipe_views"
-    __table_args__ = (UniqueConstraint("recipe_id", "user_id", name="uq_view_row"),)
 
-    id = Column(Integer, primary_key=True)
-    recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    viewed_at = Column(DateTime, default=utcnow)
-
-    recipe = relationship("Recipe")
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True)
+    viewed_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
 
 
-class RecipeReview(Base):
-    """레시피 후기(댓글)."""
+class Review(Base):
+    """A comment on a recipe. The design calls these 댓글 on the recipe and 후기 on the home screen."""
 
-    __tablename__ = "recipe_reviews"
+    __tablename__ = "reviews"
 
-    id = Column(Integer, primary_key=True)
-    recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=utcnow)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), index=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    text: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
-    user = relationship("User")
-    recipe = relationship("Recipe")
-
-
-class RecipeCompletion(Base):
-    """레시피 따라하기 완료 인증."""
-
-    __tablename__ = "recipe_completions"
-    __table_args__ = (UniqueConstraint("recipe_id", "user_id", name="uq_complete_once"),)
-
-    id = Column(Integer, primary_key=True)
-    recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    image_path = Column(String, nullable=False)
-    created_at = Column(DateTime, default=utcnow)
-
-    recipe = relationship("Recipe")
+    author: Mapped["User"] = relationship()
+    recipe: Mapped["Recipe"] = relationship()
 
 
 class ShopItem(Base):
     __tablename__ = "shop_items"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False)
-    description = Column(String, default="")
-    price = Column(Integer, nullable=False)  # 필요 포인트
-    min_level = Column(Integer, default=1, nullable=False)  # 레벨 제한
-    stock = Column(Integer, nullable=True)  # 전체 누적 재고 상한. null = 무제한
-    monthly_limit = Column(Integer, nullable=True)  # 이번 달 교환 가능 개수 상한 (달마다 자동 초기화). null = 무제한
-    is_active = Column(Boolean, default=True, nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(60))
+    price_points: Mapped[int] = mapped_column(Integer)
+    required_level: Mapped[int] = mapped_column(Integer, default=1)
+    monthly_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # None = unlimited
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class Exchange(Base):
-    """상점 교환 내역 (MVP: 실제 발송 없이 기록만)."""
+    """A gifticon exchange. MVP: nothing is actually sent, this is the saved 교환 내역."""
 
     __tablename__ = "exchanges"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    item_id = Column(Integer, ForeignKey("shop_items.id"), nullable=False)
-    price = Column(Integer, nullable=False)  # 교환 당시 가격
-    created_at = Column(DateTime, default=utcnow)
-
-    item = relationship("ShopItem")
-    user = relationship("User")
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    shop_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shop_items.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(60))
+    points_spent: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
 
-class Friendship(Base):
-    """친구 관계. 요청(pending) → 수락(accepted). 거절·취소·삭제하면 행이 지워져 다시 요청 가능.
-    한 쌍의 사용자 사이에는 방향과 상관없이 1행만 존재한다 (서비스 로직에서 보장)."""
+class LedgerEntry(Base):
+    """Append-only audit trail for every point change (points can become real gifticons)."""
 
-    __tablename__ = "friendships"
-    __table_args__ = (UniqueConstraint("requester_id", "addressee_id", name="uq_friend_pair"),)
+    __tablename__ = "ledger"
 
-    id = Column(Integer, primary_key=True)
-    requester_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    addressee_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    status = Column(String, nullable=False, default="pending")  # pending | accepted
-    created_at = Column(DateTime, default=utcnow)
-    responded_at = Column(DateTime, nullable=True)
-
-    requester = relationship("User", foreign_keys=[requester_id])
-    addressee = relationship("User", foreign_keys=[addressee_id])
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    points_delta: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(40))
+    ref_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    ref_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # True once a positive entry has been clawed back from the spendable balance by expire_points().
+    expired: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)

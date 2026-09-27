@@ -1,482 +1,456 @@
 import datetime as dt
-from typing import Optional
+from typing import Annotated, List, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
+
+from .enums import BattleKind, BattlePhase, Category, Tier, Tool
+
+Nickname = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=16)]
+Name40 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
 
 
-def _password_rule(v: str) -> str:
-    if not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
-        raise ValueError("영문과 숫자를 모두 포함해 주세요")
-    if len(v.encode("utf-8")) > 72:
-        raise ValueError("너무 길어요")
+def _check_password_bytes(v: str) -> str:
+    if len(v.encode("utf-8")) > 72:  # bcrypt only looks at the first 72 bytes
+        raise ValueError("비밀번호가 너무 깁니다 (한글은 글자당 3바이트, 최대 72바이트)")
     return v
 
 
-# ---------- auth / user ----------
-class SignupRequest(BaseModel):
-    email: EmailStr
-    nickname: str = Field(min_length=2, max_length=12)
-    password: str = Field(min_length=8, max_length=72, description="8자 이상, 영문+숫자")
+# ------------------------------------------------------------------ auth / me
+class SignupIn(BaseModel):
+    email: Optional[EmailStr] = None  # 회원가입 화면에 이메일 칸이 없어서 선택. 나중에 정보 수정에서 추가 가능
+    nickname: Nickname
+    password: str = Field(min_length=8, max_length=72)
+    tier: Tier
 
     @field_validator("password")
     @classmethod
-    def check_password(cls, v):
-        return _password_rule(v)
-    skill: str  # "low" | "mid" | "high"
-    invite_code: Optional[str] = None
+    def _password_bytes(cls, v: str) -> str:
+        return _check_password_bytes(v)
 
 
-class LoginRequest(BaseModel):
-    email: EmailStr
+class LoginIn(BaseModel):
+    # 이메일을 넣으세요. 이메일 없이 가입한 계정은 같은 칸에 닉네임을 넣으면 돼요('@'가 있으면 이메일로 봐요).
+    email: str = Field(min_length=1, max_length=255)
     password: str = Field(max_length=200)
 
 
-class UserOut(BaseModel):
-    id: int
-    email: str
-    nickname: str
-    skill: str
-    skill_label: str
+class GoogleAuthIn(BaseModel):
+    id_token: str
+    # 이 구글 계정으로 처음 가입하는 경우에만 쓰여요. 디자인엔 구글 가입 시 실력 선택 화면이 없어서,
+    # 안 보내면 초급으로 시작해요(정보 수정에서 바꿀 수 있어요) — API_CONTRACT.md 참고.
+    tier: Optional[Tier] = None
+
+
+class NicknameAvailableOut(BaseModel):
+    available: bool
+
+
+class ProfileUpdateIn(BaseModel):
+    """정보 수정. 보낸 필드만 바뀌어요. password는 바꿀 때만 보내세요."""
+
+    nickname: Optional[Nickname] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(default=None, min_length=8, max_length=72)
+    tier: Optional[Tier] = None
+
+    @field_validator("password")
+    @classmethod
+    def _password_bytes(cls, v: Optional[str]) -> Optional[str]:
+        return v if v is None else _check_password_bytes(v)
+
+
+class Progress(BaseModel):
+    """'Lv.2 · 보유 1,240P · 다음 레벨까지 6P → Lv.3' 를 그리는 데 필요한 값 전부."""
+
     level: int
-    total_points: int
-    points: int
+    points: int  # 보유(교환에 쓸 수 있는) 포인트
+    total_points: int  # 지금까지 모은 포인트. 레벨은 이 값 기준이라 교환해도 안 떨어져요
+    level_start_points: int
     next_level_points: int
     points_to_next_level: int
-    level_progress: float
-    is_admin: bool
-    invite_code: str
-    tutorial_step: int
-    tutorial_completed: bool
-    notifications_enabled: bool
 
 
-class TokenResponse(BaseModel):
+class UserBrief(BaseModel):
+    id: int
+    nickname: str
+    avatar_url: Optional[str]
+
+
+class MeOut(UserBrief):
+    email: Optional[str]
+    tier: Tier
+    tier_label: str
+    pending_tier: Optional[Tier]  # 실력을 바꿨다면 "다음 대결부터" 적용될 값
+    pending_tier_label: Optional[str]
+    pending_tier_applies_at: Optional[dt.datetime]
+    progress: Progress
+    saved_recipe_count: int
+    review_count: int
+
+
+class AuthOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    user: UserOut
+    user: MeOut
 
 
-class UserUpdate(BaseModel):
-    nickname: Optional[str] = Field(default=None, min_length=2, max_length=12)
-    current_password: Optional[str] = Field(default=None, max_length=200)
-    new_password: Optional[str] = Field(default=None, min_length=8, max_length=72)
-
-    @field_validator("new_password")
-    @classmethod
-    def check_new_password(cls, v):
-        return None if v is None else _password_rule(v)
-    notifications_enabled: Optional[bool] = None
-
-
-class TutorialUpdate(BaseModel):
-    step: Optional[int] = Field(default=None, ge=0)
-    completed: Optional[bool] = None
+class HistoryItem(BaseModel):
+    battle_id: int
+    entry_id: int
+    title: str  # "계란 요리 대결"
+    theme: str
+    week_label: str  # "9월 3주차"
+    tier: Optional[Tier]  # 테마 대결(전체 공통)이면 null
+    tier_label: Optional[str]
+    status: str  # in_progress | ranked | void
+    rank: Optional[int]  # 순위가 없으면 화면에는 "참가"
 
 
-class PointLogOut(BaseModel):
-    points: int
-    reason: str
-    ref: str
-    memo: str
+class MyReviewOut(BaseModel):
+    id: int
+    recipe_id: int
+    recipe_name: str
+    text: str
     created_at: dt.datetime
 
 
-# ---------- battle ----------
-class CategoryOut(BaseModel):
+class HomeOut(BaseModel):
+    me: MeOut
+    cooking_count_this_month: int
+    saved_amount_krw: int
+    history: List[HistoryItem]  # 비어 있으면 "아직 참가한 대결이 없어요"
+    reviews: List[MyReviewOut]
+    review_total: int
+
+
+# ------------------------------------------------------------------ recipes
+class IngredientIn(BaseModel):
+    name: Name40
+    amount: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20)]] = None
+
+
+class StepIn(BaseModel):
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
+class RecipeCreateIn(BaseModel):
+    """대결 1등이 자기 레시피를 레시피 탭에 공유할 때."""
+
+    name: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]] = None
+    category: Category
+    price: int = Field(ge=0, le=1_000_000)
+    minutes: int = Field(ge=1, le=1440)
+    difficulty: Tier
+    tools: List[Tool] = Field(default_factory=list, max_length=4)
+    ingredients: List[IngredientIn] = Field(min_length=1, max_length=30)
+    steps: List[StepIn] = Field(min_length=1, max_length=30)
+
+
+class RecipeCard(BaseModel):
     id: int
     name: str
-    description: str
+    category: Category
+    category_label: str
+    price: int
+    minutes: int
+    difficulty: Tier
+    difficulty_label: str
+    win_label: Optional[str]  # "밥 요리 대결 1등"
+    photo_url: Optional[str]
+    saves: int
+    is_saved: bool
+    is_essential: bool  # "자취 필수"
 
 
-class BattleOut(BaseModel):
-    id: int
-    kind: str  # league | fail
-    kind_label: str  # "리그 대결" / "망한 요리 대회"
-    group: str  # low/mid/high 또는 fail
-    group_label: str  # "하"/"중"/"상" 또는 "전체"
-    category: CategoryOut
-    start_date: dt.date
-    cooking_end_date: dt.date  # 요리(사진 올리기) 마지막 날
-    vote_start_date: dt.date  # 투표 시작일
-    end_date: dt.date  # 투표 마지막 날 = 대결 종료
-    phase: str  # cooking | voting | closed
-    phase_label: str  # "요리 기간" / "투표 기간" / "종료"
-    phase_days_left: int  # 지금 단계 남은 날 (마지막 날 0)
-    days_left: int  # 대결 종료까지 남은 날
-    verification_keyword: str
-    is_closed: bool
-    is_void: bool
-    submission_count: int
-    has_submitted: bool
-    has_voted: bool
-    can_submit: bool  # 지금 참가 가능
-    can_vote: bool  # 지금 투표 가능 (투표 기간 + 참가자 + 아직 안 함)
-    vote_block_reason: Optional[str]  # 투표 불가 이유 (버튼 아래 안내 문구)
-    is_my_group: bool
+class ToolOut(BaseModel):
+    code: Tool
+    label: str
 
 
-class SubmissionImageOut(BaseModel):
-    url: str
-    shot_type: Optional[str]
-    shot_label: str
-    time_verified: bool  # EXIF 촬영 시각이 있어 대결 기간 안임이 확인됨
+class IngredientOut(BaseModel):
+    name: str
+    amount: Optional[str]
 
 
-class AICheckOut(BaseModel):
-    status: str  # passed | failed | skipped | error
-    summary: str
-    warnings: list[str]  # advisory 모드에서 거절하지 않고 남긴 문제점
+class StepOut(BaseModel):
+    order: int
+    text: str
 
 
-class SubmissionOut(BaseModel):
-    id: int
-    battle_id: int
-    user_id: int
-    nickname: str
-    user_level: int
-    title: str
-    description: str
-    ingredient_cost: Optional[int]
-    image_url: str
-    image_urls: list[str]
-    images: list[SubmissionImageOut]  # 구도별 사진
-    photo_verified: bool  # 모든 사진의 촬영 시각이 확인됨 → "촬영 인증" 배지
-    ai_verified: bool  # 이미지 인식 AI 검사 통과 → "AI 인증" 배지
-    ai_check: Optional[AICheckOut]
-    created_at: dt.datetime
-    vote_count: Optional[int]  # HIDE_VOTES_UNTIL_CLOSED=True면 마감 전 null
-    has_voted: bool  # 내가 이 작품에 투표했는지
-    is_mine: bool
-    is_hidden: bool
+class RecipeDetailOut(RecipeCard):
+    author: UserBrief
+    tools: List[ToolOut]
+    ingredients: List[IngredientOut]
+    steps: List[StepOut]
     comment_count: int
-    rating_avg: Optional[float]  # 별점 평균 (평가 없으면 null)
-    rating_count: int
-
-
-class SubmitResult(BaseModel):
-    submission: SubmissionOut
-    points_earned: int
-    level: int
-    leveled_up: bool
-
-
-class VoteResponse(BaseModel):
-    submission_id: int
-    vote_count: Optional[int]
-
-
-class ResultEntry(BaseModel):
-    submission_id: int
-    user_id: int
-    nickname: str
-    title: str
-    image_url: str
-    vote_count: int
-    rank: int
-    rank_points: int
-    recipe_id: Optional[int] = None  # 이 작품으로 공유된 레시피 (TOP 목록의 '레시피 공유' 표시·이동용)
-
-
-class MyResult(BaseModel):
-    submission_id: Optional[int]
-    rank: Optional[int]
-    points_earned: int
-    level_before: Optional[int]
-    level_after: Optional[int]
-    leveled_up: bool
-    can_share_recipe: bool
-
-
-class BattleResults(BaseModel):
-    battle: BattleOut
-    is_void: bool
-    podium: list[ResultEntry]  # 1~3등
-    entries: list[ResultEntry]  # 전체 순위
-    my_result: Optional[MyResult]
-
-
-# ---------- feedback ----------
-class CommentCreate(BaseModel):
-    content: str = Field(min_length=1, max_length=500)
-
-
-class CommentOut(BaseModel):
-    id: int
-    user_id: int
-    nickname: str
-    content: str
-    created_at: dt.datetime
-    is_mine: bool
-
-
-class BattleCommentCreate(BaseModel):
-    content: str = Field(min_length=1, max_length=500)
-    rating: int = Field(ge=1, le=5, description="별점 1~5")
-
-
-class BattleCommentUpdate(BaseModel):
-    content: Optional[str] = Field(default=None, min_length=1, max_length=500)
-    rating: Optional[int] = Field(default=None, ge=1, le=5)
-
-
-class BattleCommentOut(BaseModel):
-    id: int
-    submission_id: int
-    user_id: int
-    nickname: str
-    content: str
-    rating: Optional[int]
-    created_at: dt.datetime  # UTC
-    created_at_display: str  # 한국 시간 표시용 "2026-09-25 14:03"
-    is_edited: bool
-    is_mine: bool
-
-
-class RatingSummary(BaseModel):
-    average: Optional[float]  # 소수 첫째 자리, 평가 없으면 null
-    count: int
-    distribution: dict  # {"5": 3, "4": 1, "3": 0, "2": 0, "1": 0}
-
-
-class BattleCommentList(BaseModel):
-    summary: RatingSummary
-    comments: list[BattleCommentOut]
-
-
-class ReportCreate(BaseModel):
-    reason: str = Field(default="", max_length=200)
-
-
-# ---------- recipe ----------
-class Ingredient(BaseModel):
-    name: str = Field(min_length=1, max_length=30)  # "김치"
-    amount: str = Field(default="", max_length=20)  # "1컵"
-    price: Optional[int] = Field(default=None, ge=0, le=1_000_000)  # 원 (입력하면 예상 재료비 자동 계산)
-
-
-def _clean_steps(v):
-    v = [s.strip() for s in v if s and s.strip()]
-    if not v:
-        raise ValueError("조리 과정을 1개 이상 입력해 주세요")
-    if any(len(s) > 300 for s in v):
-        raise ValueError("조리 과정 한 단계는 300자 이내로 써 주세요")
-    return v
-
-
-def _check_choice(v, options: dict, what: str):
-    if v is not None and v not in options:
-        raise ValueError(f"{what}는 {', '.join(options)} 중 하나예요")
-    return v
-
-
-def _clean_tags(v):
-    from .rules import RECIPE_TAGS
-    v = list(dict.fromkeys(t.strip() for t in (v or []) if t and t.strip()))
-    bad = [t for t in v if t not in RECIPE_TAGS]
-    if bad:
-        raise ValueError(f"사용할 수 없는 태그예요: {', '.join(bad)}")
-    return v
-
-
-class RecipeCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=50)
-    description: str = Field(default="", max_length=1000)
-    ingredients: list[Ingredient] = Field(min_length=1, max_length=30)
-    steps: list[str] = Field(min_length=1, max_length=30)
-    cook_minutes: int = Field(ge=1, le=600, description="조리 시간(분)")
-    difficulty: str = Field(description="easy(초급) / normal(중급) / hard(상급)")
-    food_type: str = Field(description="rice/noodle/pasta/meat/soup/side/healthy/dessert")
-    tags: list[str] = Field(default=[], max_length=6, description="자취 필수, 전자레인지, 원팬, 야식, 도시락, 다이어트")
-    tools: str = Field(default="", max_length=100)
-
-    @field_validator("steps")
-    @classmethod
-    def check_steps(cls, v):
-        return _clean_steps(v)
-
-    @field_validator("difficulty")
-    @classmethod
-    def check_difficulty(cls, v):
-        from .rules import RECIPE_DIFFICULTIES
-        return _check_choice(v, RECIPE_DIFFICULTIES, "난이도")
-
-    @field_validator("food_type")
-    @classmethod
-    def check_food_type(cls, v):
-        from .rules import RECIPE_FOOD_TYPES
-        return _check_choice(v, RECIPE_FOOD_TYPES, "종류")
-
-    @field_validator("tags")
-    @classmethod
-    def check_tags(cls, v):
-        return _clean_tags(v)
-
-
-class RecipeUpdate(BaseModel):
-    """레시피 수정 — 바꿀 항목만 보내면 된다."""
-    title: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    description: Optional[str] = Field(default=None, max_length=1000)
-    ingredients: Optional[list[Ingredient]] = Field(default=None, min_length=1, max_length=30)
-    steps: Optional[list[str]] = Field(default=None, min_length=1, max_length=30)
-    cook_minutes: Optional[int] = Field(default=None, ge=1, le=600)
-    difficulty: Optional[str] = None
-    food_type: Optional[str] = None
-    tags: Optional[list[str]] = Field(default=None, max_length=6)
-    tools: Optional[str] = Field(default=None, max_length=100)
-
-    @field_validator("steps")
-    @classmethod
-    def check_steps(cls, v):
-        return None if v is None else _clean_steps(v)
-
-    @field_validator("difficulty")
-    @classmethod
-    def check_difficulty(cls, v):
-        from .rules import RECIPE_DIFFICULTIES
-        return _check_choice(v, RECIPE_DIFFICULTIES, "난이도")
-
-    @field_validator("food_type")
-    @classmethod
-    def check_food_type(cls, v):
-        from .rules import RECIPE_FOOD_TYPES
-        return _check_choice(v, RECIPE_FOOD_TYPES, "종류")
-
-    @field_validator("tags")
-    @classmethod
-    def check_tags(cls, v):
-        return None if v is None else _clean_tags(v)
-
-
-class RecipeOut(BaseModel):
-    id: int
-    title: str
-    description: str
-    ingredients: list[dict]  # [{"name", "amount", "price"}]
-    steps: list[str]
-    estimated_cost: Optional[int]  # 예상 재료비 (재료 가격 합계)
-    cook_minutes: Optional[int]
-    difficulty: Optional[str]
-    difficulty_label: str  # 초급/중급/상급
-    food_type: Optional[str]
-    food_type_label: str  # 밥/면/...
-    tags: list[str]
-    tools: str
-    source: str  # official(공식) | winner(대결 우승) | user(사용자)
-    badge: Optional[str]  # "밥 요리 대결 1등" / "요리왕 공식"
-    author_id: Optional[int]
-    author_nickname: Optional[str]
-    is_official: bool
-    is_mine: bool
-    source_submission_id: Optional[int]
-    image_url: Optional[str]
-    save_count: int
-    review_count: int
-    completion_count: int
-    saved_by_me: bool
-    completed_by_me: bool
-    matched_ingredients: Optional[list[str]] = None  # '재료로 찾기'일 때만: 가진 재료 중 쓰이는 것
-    missing_ingredients: Optional[list[str]] = None  # '재료로 찾기'일 때만: 더 필요한 재료
     created_at: dt.datetime
 
 
-class RecipeList(BaseModel):
-    total: int  # 필터에 맞는 전체 개수 ("8개 결과")
-    items: list[RecipeOut]
+class RecipePage(BaseModel):
+    total: int  # 필터에 맞는 전체 개수 ("{count}개 결과", "레시피 {count}개 보기")
+    items: List[RecipeCard]
+    has_more: bool
+
+
+class SaveOut(BaseModel):
+    saved: bool
+    saves: int
+
+
+class ReviewCreateIn(BaseModel):
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 
 
 class ReviewOut(BaseModel):
     id: int
     recipe_id: int
-    recipe_title: str
-    user_id: int
-    nickname: str
-    content: str
+    author: UserBrief
+    text: str
     created_at: dt.datetime
     is_mine: bool
 
 
-# ---------- shop ----------
+class ReviewPage(BaseModel):
+    total: int
+    items: List[ReviewOut]
+
+
+# ------------------------------------------------------------------ battles
+class PhotoOut(BaseModel):
+    photo_id: int
+    photo_url: str
+    captured_at: dt.datetime  # 서버가 찍은 촬영(업로드) 시각
+    expires_at: dt.datetime  # 이 시각까지 [제출]해야 해요. 지나면 다시 촬영
+
+
+class JoinIn(BaseModel):
+    photo_id: int
+    dish_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
+    description: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+
+
+class EntryOut(BaseModel):
+    id: int
+    battle_id: int
+    dish_name: str
+    description: str
+    photo_url: str
+    author: UserBrief
+    vote_count: int
+    created_at: dt.datetime
+    notify_on_close: bool  # "대회 종료 시 알림 받기"를 눌렀는지
+    # votable(투표) | mine(투표 불가) | voted(투표함) | vote_done(투표 완료) | unavailable(투표 기간/그룹 아님)
+    state: str
+    comment_count: int = 0
+    rating_avg: Optional[float] = None  # 평가 없으면 null
+    rating_count: int = 0
+
+
+class EntryCommentCreateIn(BaseModel):
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+    rating: int = Field(ge=1, le=5)
+
+
+class EntryCommentUpdateIn(BaseModel):
+    text: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]] = None
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
+
+
+class EntryCommentOut(BaseModel):
+    id: int
+    entry_id: int
+    author: UserBrief
+    text: str
+    rating: int
+    created_at: dt.datetime
+    is_edited: bool
+    is_mine: bool
+
+
+class RatingSummaryOut(BaseModel):
+    average: Optional[float]
+    count: int
+    distribution: dict  # {"5": n, "4": n, "3": n, "2": n, "1": n}
+
+
+class EntryCommentPage(BaseModel):
+    summary: RatingSummaryOut
+    items: List[EntryCommentOut]
+
+
+class LastResultOut(BaseModel):
+    battle_id: int
+    title: str
+    week_label: str
+    status: str  # ranked | void
+    joined: bool
+    my_rank: Optional[int]
+
+
+class BattleOut(BaseModel):
+    id: int
+    kind: BattleKind
+    tier: Optional[Tier]  # kind=theme이면 null (전체 공통)
+    tier_label: Optional[str]
+    title: str  # "계란 요리 대결"
+    theme: str  # "계란 요리"
+    description: str
+    week_label: str
+    starts_at: dt.datetime
+    ends_at: dt.datetime  # 요리(참가) 기간 마감
+    voting_ends_at: dt.datetime  # 투표 마감 (ends_at + 24시간)
+    phase: BattlePhase
+    seconds_left: int  # 지금 단계(요리 또는 투표)가 끝날 때까지 남은 초
+    days_left: int  # "남은 기간 3일" (요리 기간 기준)
+    server_time: dt.datetime
+    participants: int
+    is_open: bool  # 요리 기간이 아직 안 끝났는지 (참가 가능 여부의 기준)
+    is_my_group: bool
+    has_joined: bool
+    can_join: bool
+    my_entry: Optional[EntryOut]
+    last_result: Optional[LastResultOut]
+
+
+class EntryListOut(BaseModel):
+    battle_id: int
+    kind: BattleKind
+    tier: Optional[Tier]
+    tier_label: Optional[str]
+    title: str
+    participants: int
+    phase: BattlePhase
+    can_vote: bool  # 내 그룹(또는 테마) 대결이고 투표 기간(대회 종료 후 24시간)이면 true
+    has_voted: bool
+    my_vote_entry_id: Optional[int]
+    items: List[EntryOut]
+
+
+class VotingCardOut(BaseModel):
+    """대결 홈의 '지난 대회 투표하기' 카드. 투표 가능한 지난 대회가 없으면 null이에요."""
+
+    battle_id: int
+    kind: BattleKind
+    title: str
+    group_label: Optional[str]  # tier_label, 테마 대결이면 null
+    participants: int
+    hours_left: int  # 투표 마감까지 남은 시간(반올림)
+    has_voted: bool
+
+
+class BattleHomeOut(BaseModel):
+    """대결 홈 화면 한 번에: 내 그룹의 오늘의 대결 + 테마 대결 + 지난 대회 투표 카드."""
+
+    daily: BattleOut
+    theme: BattleOut
+    voting: Optional[VotingCardOut]
+
+
+class JoinOut(BaseModel):
+    entry: EntryOut
+    points_awarded: int
+    points: int  # 참가 후 보유 포인트
+
+
+class VoteOut(BaseModel):
+    entry_id: int
+    vote_count: int
+    has_voted: bool
+    points_awarded: int  # 투표하면 +1P
+
+
+class NotifyOut(BaseModel):
+    """MVP: 실제 알림 발송은 없고, 원하는지 여부만 저장돼요."""
+
+    notify_on_close: bool
+
+
+class ResultRow(BaseModel):
+    rank: int
+    entry_id: int
+    user: UserBrief
+    dish_name: str
+    vote_count: int
+    submitted_at: dt.datetime
+    tie: Optional[str]  # first = "먼저 제출" · tied = "동점" · null = 동점 아님
+    is_me: bool
+    is_winner: bool  # 1등 행의 "레시피 공유" 표시(누가 봐도 true)
+    can_share_recipe: bool  # 내가 1등이고 아직 공유 안 했을 때만 true → 이때만 누를 수 있는 [레시피 공유] 버튼
+
+
+class ResultMe(BaseModel):
+    joined: bool
+    rank: Optional[int]
+    participation_points: int
+    rank_points: int  # "내 순위 2등 +4P" 의 4
+    level_from: Optional[int]
+    level_to: Optional[int]
+    leveled_up: bool
+    can_share_recipe: bool
+    shared_recipe_id: Optional[int]
+
+
+class ResultOut(BaseModel):
+    battle_id: int
+    kind: BattleKind
+    tier: Optional[Tier]
+    tier_label: Optional[str]
+    title: str
+    theme: str
+    week_label: str
+    participants: int
+    status: str  # ranked | void (참가자 3명 미만 = 대결 무효)
+    podium: List[ResultRow]
+    top10: List[ResultRow]
+    me: ResultMe
+
+
+# ------------------------------------------------------------------ shop
 class ShopItemOut(BaseModel):
     id: int
     name: str
-    description: str
-    price: int
-    min_level: int
-    stock: Optional[int]
-    can_exchange: bool
-    blocked_reason: Optional[str]  # "N포인트 더 필요해요" / "N레벨부터 교환 가능" / "품절" / "이번 달 물량이 다 나갔어요..." / 월 교환 횟수 초과
+    price_points: int
+    required_level: int
+    state: str  # available | insufficient_points | locked
+    points_short: int  # insufficient_points일 때 "N P 더 필요해요"
 
 
-class ShopItemCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=50)
-    description: str = Field(default="", max_length=200)
-    price: int = Field(ge=1)
-    min_level: int = Field(default=1, ge=1)
-    stock: Optional[int] = Field(default=None, ge=0)
-    monthly_limit: Optional[int] = Field(default=None, ge=0, description="이번 달 교환 가능 개수 상한 (달마다 자동 초기화)")
+class ShopOut(BaseModel):
+    points: int
+    level: int
+    items: List[ShopItemOut]
 
 
 class ExchangeOut(BaseModel):
-    id: int
-    item_id: int
     item_name: str
-    price: int
-    created_at: dt.datetime
-    points_left: Optional[int] = None
+    points_spent: int
+    points: int  # 남은 포인트
 
 
-# ---------- admin ----------
-class CategoryCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=30)
-    description: str = Field(default="", max_length=200)
-    kind: str = Field(default="league", pattern="^(league|fail)$")  # fail = 망한 요리 대회 주제
+# ------------------------------------------------------------------ admin (demo/ops tools)
+class AdminPhaseIn(BaseModel):
+    phase: Literal["cooking", "voting"]
 
 
-class PhaseChange(BaseModel):
-    phase: str = Field(pattern="^(cooking|voting)$")
-
-
-class StartBattleRequest(BaseModel):
-    group: str
-    category_id: Optional[int] = None  # 비우면 랜덤
-
-
-# ---------- friends ----------
-class UserBrief(BaseModel):
-    user_id: int
-    nickname: str
-    level: int
-    skill: str
-    skill_label: str
-
-
-class UserSearchOut(UserBrief):
-    relation: str  # self | friend | request_sent | request_received | none
-    request_id: Optional[int]  # 요청 수락/거절/취소에 쓰는 id
-
-
-class FriendRequestCreate(BaseModel):
-    nickname: Optional[str] = Field(default=None, max_length=30)  # 닉네임 또는
-    user_id: Optional[int] = None  # user_id 중 하나
-
-
-class FriendRequestOut(BaseModel):
+class AdminBattleOut(BaseModel):
     id: int
-    from_user: UserBrief
-    to_user: UserBrief
-    created_at: dt.datetime
-    created_at_display: str
+    kind: BattleKind
+    phase: BattlePhase
+    ends_at: dt.datetime
+    voting_ends_at: dt.datetime
+    finalized_at: Optional[dt.datetime]
+    is_void: bool
 
 
-class FriendOut(UserBrief):
-    total_points: int
-    friends_since: Optional[dt.datetime]
-    last_cooked_at: Optional[str]  # 마지막 대결 참가 (한국 시간 표시용), 없으면 null
-    battle_count: int
+class AdminCloseOut(BaseModel):
+    battle_id: int
+    finalized: bool
+    is_void: bool
+    participants: int
 
 
-class RankingEntry(UserBrief):
-    rank: int
-    total_points: int
-    win_count: int
-    is_me: bool
+class AdminShopItemCreateIn(BaseModel):
+    name: Name40
+    price_points: int = Field(ge=1)
+    required_level: int = Field(default=1, ge=1)
+    monthly_limit: Optional[int] = Field(default=None, ge=0)

@@ -1,11 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 cookbattle.db
-.env
-uploads/*
-!uploads/.gitkeep
-.jwt_secret
 cookbattle.db-wal
 cookbattle.db-shm
 *.db
+.env
+.jwt_secret
+uploads/*
+!uploads/.gitkeep
