@@ -61,8 +61,12 @@ export default function Shop() {
           <div className="gift-grid">
             {items.map((item) => (
               <div key={item.id} className="g">
-                <div className="gi" style={{ background: `linear-gradient(135deg, ${item.bg[0]}, ${item.bg[1]})`, color: item.ink }}>
-                  <Icon name={item.icon} size={40} strokeWidth={1.8} style={item.locked ? { opacity: 0.55 } : undefined} />
+                <div className="gi" style={item.photoUrl ? undefined : { background: `linear-gradient(135deg, ${item.bg[0]}, ${item.bg[1]})`, color: item.ink }}>
+                  {item.photoUrl ? (
+                    <img src={item.photoUrl} alt="" className="gi__img" style={item.locked ? { opacity: 0.6 } : undefined} />
+                  ) : (
+                    <Icon name={item.icon} size={40} strokeWidth={1.8} style={item.locked ? { opacity: 0.55 } : undefined} />
+                  )}
                   {item.locked && <span className="gi__lock"><Icon name="lock" size={14} strokeWidth={2.4} /></span>}
                 </div>
                 <div className="gn">{item.name}</div>
@@ -79,7 +83,7 @@ export default function Shop() {
           </div>
         )}
         {error && <p className="muted" style={{ color: 'var(--danger, #d64545)' }}>{error}</p>}
-        <p className="note" style={{ marginBottom: 20 }}>포인트는 대결 참가(+1P)와 순위 보상으로 모여요</p>
+        <p className="note" style={{ marginBottom: 20 }}>포인트는 대결 참가(+10P)와 순위 보상으로 모여요</p>
       </div>
 
       <TabBar />
@@ -89,8 +93,11 @@ export default function Shop() {
           <div className="scrim" onClick={() => setSelected(null)} />
           <div className="sheet" role="dialog" aria-modal="true" aria-label={`${selected.name} 교환`}>
             <span className="sheet__grip" />
-            <span className="sheet__ico" style={{ background: `linear-gradient(135deg, ${selected.bg[0]}, ${selected.bg[1]})`, color: selected.ink }}>
-              <Icon name={selected.icon} size={42} strokeWidth={1.8} />
+            <span
+              className="sheet__ico"
+              style={selected.photoUrl ? { overflow: 'hidden' } : { background: `linear-gradient(135deg, ${selected.bg[0]}, ${selected.bg[1]})`, color: selected.ink }}
+            >
+              {selected.photoUrl ? <img src={selected.photoUrl} alt="" className="gi__img" /> : <Icon name={selected.icon} size={42} strokeWidth={1.8} />}
             </span>
             <h2 className="sheet__title">{selected.name}</h2>
             <p className="sheet__sub">교환하면 포인트가 바로 차감돼요</p>

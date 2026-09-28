@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, Navigate, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Screen, Header, TopBar, BottomAction } from '../components/Screen';
 import Icon, { EggArt } from '../components/Icon';
 import { Button, Field } from '../components/ui';
@@ -7,8 +7,10 @@ import { skillLabel } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
 export default function CookVerify() {
-  const { user, draftPhoto, submission, submitEntry, fetchBattle } = useApp();
+  const { user, draftPhotos, submission, submitEntry, fetchBattle } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { kind, tier } = location.state || {};
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
   const [touched, setTouched] = useState(false);
@@ -17,8 +19,8 @@ export default function CookVerify() {
   const [topic, setTopic] = useState('');
 
   useEffect(() => {
-    fetchBattle().then((b) => setTopic(b.topic)).catch(() => {});
-  }, [fetchBattle]);
+    fetchBattle(tier, kind).then((b) => setTopic(b.topic)).catch(() => {});
+  }, [fetchBattle, tier, kind]);
 
   // One entry per battle
   if (submission) return <Navigate to="/battle/done" replace />;
@@ -32,7 +34,7 @@ export default function CookVerify() {
     if (!name.trim()) return;
     setSubmitting(true);
     try {
-      await submitEntry({ name: name.trim(), description: desc.trim() });
+      await submitEntry({ name: name.trim(), description: desc.trim(), tier, kind });
       navigate('/battle/done', { replace: true });
     } catch (err) {
       setServerError(err.message);
@@ -47,21 +49,25 @@ export default function CookVerify() {
         <Header className="verify-hdr">
           <TopBar title="요리 인증" back="/battle" />
           <div className="verify-context">
-            <EggArt size={18} yolk="#D9B85C" outline="#C2650F" />
-            {topic} 대결 · {skillLabel(user.skill)} 그룹
+            <EggArt size={18} yolk="#FFD54F" outline="var(--brand-ink)" />
+            {topic} 대결 · {kind === 'theme' ? '테마 대결' : `${skillLabel(tier || user.skill)} 그룹`}
           </div>
         </Header>
 
         <div className="body">
           <div className="stack verify-fields">
             <div className="verify-photo">
-              {draftPhoto ? (
-                <img src={draftPhoto} alt="촬영한 요리 사진" />
+              {draftPhotos.length > 0 ? (
+                <div className="verify-photo-grid">
+                  {draftPhotos.map((p, i) => <img key={i} src={p} alt={`인증샷 ${i + 1}`} />)}
+                </div>
               ) : (
                 <div className="verify-photo__ph"><Icon name="bowl" size={60} strokeWidth={1.4} /></div>
               )}
-              {draftPhoto && <span className="verify-photo__ok"><Icon name="check" size={13} strokeWidth={2.4} />촬영 완료</span>}
-              <Link to="/battle/camera" className="verify-photo__retake"><Icon name="camera" size={14} strokeWidth={2.2} />다시 촬영</Link>
+              {draftPhotos.length > 0 && (
+                <span className="verify-photo__ok"><Icon name="check" size={13} strokeWidth={2.4} />인증샷 {draftPhotos.length}장 촬영 완료</span>
+              )}
+              <Link to="/battle/camera" state={{ kind, tier }} className="verify-photo__retake"><Icon name="camera" size={14} strokeWidth={2.2} />다시 촬영</Link>
             </div>
 
             <Field

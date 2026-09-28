@@ -6,6 +6,13 @@ import { adaptRecipeDetail, toneFor } from '../api/adapt';
 import { skillLabel, won } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
+const DIFF_OPTIONS = [
+  { id: 'easy', label: '쉬움 (원팬)' },
+  { id: 'normal', label: '보통' },
+  { id: 'hard', label: '귀찮음' },
+];
+const DIFF_LABEL = Object.fromEntries(DIFF_OPTIONS.map((o) => [o.id, o.label]));
+
 export default function RecipeDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -14,6 +21,12 @@ export default function RecipeDetail() {
   const [recipe, setRecipe] = useState(null);
   const [notFound, setNotFound] = useState(false);
   const [list, setList] = useState([]);
+  const [checked, setChecked] = useState({});
+  const [reviewText, setReviewText] = useState('');
+  const [reviewPhoto, setReviewPhoto] = useState(null); // { file, preview }
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewDiff, setReviewDiff] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -43,6 +56,35 @@ export default function RecipeDetail() {
     }
   };
 
+  const onPickReviewPhoto = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setReviewPhoto({ file, preview: URL.createObjectURL(file) });
+  };
+
+  const submitReview = async (e) => {
+    e.preventDefault();
+    if (!reviewText.trim() || reviewBusy) return;
+    setReviewBusy(true);
+    try {
+      await addComment(id, reviewText.trim(), {
+        photoFile: reviewPhoto?.file,
+        rating: reviewRating || undefined,
+        difficultyTag: reviewDiff || undefined,
+      });
+      setList((c) => [
+        ...c,
+        {
+          author: '나', text: reviewText.trim(), rating: reviewRating || null,
+          difficultyLabel: DIFF_LABEL[reviewDiff] ?? null, photoUrl: reviewPhoto?.preview ?? null,
+        },
+      ]);
+      setReviewText(''); setReviewPhoto(null); setReviewRating(0); setReviewDiff(null);
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
   return (
     <Screen tone="plain">
       <div className="body detail-body">
@@ -68,25 +110,119 @@ export default function RecipeDetail() {
           <span className="detail-by"><span className="detail-by__av">{recipe.author?.[0] ?? '요'}</span>{recipe.author} · {recipe.award}</span>
           <h1 className="detail-title">{recipe.name}</h1>
           <div className="detail-stats">
-            <div className="stat"><span>예상 재료비</span><b>약 {won(recipe.cost)}원</b></div>
-            <div className="stat"><span>조리 시간</span><b>{recipe.minutes}분</b></div>
+            <div className="stat stat--green"><span>예상 재료비</span><b>약 {won(recipe.cost)}원</b></div>
+            <div className="stat stat--green"><span>조리 시간</span><b>{recipe.minutes}분</b></div>
             <div className="stat"><span>난이도</span><b>{skillLabel(recipe.skill)}</b></div>
           </div>
 
+          {(recipe.valueScore || recipe.caloriesKcal || recipe.failSafetyLabel) && (
+            <div className="detail-stats" style={{ marginTop: 8 }}>
+              <div className="stat">
+                <span>가성비 지수</span>
+                <b>{recipe.valueScore ? `★ ${recipe.valueScore.toFixed(1)}` : '-'}</b>
+              </div>
+              <div className="stat">
+                <span>칼로리 &amp; 양</span>
+                <b>{recipe.caloriesKcal ? `${recipe.caloriesKcal}kcal` : '-'}</b>
+              </div>
+              <div className="stat"><span>실패 난이도</span><b>{recipe.failSafetyLabel ?? '-'}</b></div>
+            </div>
+          )}
+          {recipe.portionLabel && <p className="muted" style={{ fontSize: 12, margin: '6px 2px 0' }}>{recipe.portionLabel}</p>}
+
           <section style={{ marginTop: 18 }}>
-            <h2 className="sec sec--tight">재료</h2>
-            {recipe.ingredients.map(([n, q]) => (
-              <div key={n} className="ing"><span>{n}</span><span>{q}</span></div>
-            ))}
+            <h2 className="sec sec--tight">자취생 장바구니 체크</h2>
+            {recipe.ingredients.map(([n, q]) => {
+              const on = !!checked[n];
+              return (
+                <label key={n} className="ing-check">
+                  <input
+                    type="checkbox" checked={on}
+                    onChange={() => setChecked((c) => ({ ...c, [n]: !c[n] }))}
+                  />
+                  <span className={`ing-check__name${on ? ' done' : ''}`}>{n}</span>
+                  <span className="ing-check__amt">{q}</span>
+                </label>
+              );
+            })}
           </section>
 
           <section style={{ marginTop: 10 }}>
             <h2 className="sec sec--tight">조리 과정</h2>
             <ol className="steps">
               {recipe.steps.map((s, i) => (
-                <li key={i} className="step"><span className="num">{i + 1}</span>{s}</li>
+                <li key={i} className="step2">
+                  <span className="num">{i + 1}</span>
+                  <span className="step2__body">
+                    <span className="step2__head">
+                      {s.minutes ? <span className="step2__time">{s.minutes}분</span> : null}
+                    </span>
+                    <span className="step2__text">{s.text}</span>
+                  </span>
+                </li>
               ))}
             </ol>
+          </section>
+
+          {recipe.chefTip && (
+            <div className="tip-box">
+              <Icon name="info" size={16} strokeWidth={2.4} style={{ flexShrink: 0, marginTop: 2 }} />
+              <span><b>자취 마스터의 꿀팁</b><br />{recipe.chefTip}</span>
+            </div>
+          )}
+
+          <section style={{ marginTop: 16 }}>
+            <h2 className="sec sec--tight">인증샷 등록 &amp; 후기 작성</h2>
+            <form onSubmit={submitReview} className="review-form">
+              <label className="review-photo-tile">
+                {reviewPhoto ? (
+                  <img src={reviewPhoto.preview} alt="" className="review-photo-tile__img" />
+                ) : (
+                  <>
+                    <Icon name="camera" size={26} strokeWidth={1.8} />
+                    <span>사진 등록 (선택)</span>
+                  </>
+                )}
+                <input type="file" accept="image/*" capture="environment" onChange={onPickReviewPhoto} hidden />
+              </label>
+
+              <p className="review-q">이 요리, 솔직히 어떠셨나요?</p>
+              <div className="stars" role="radiogroup" aria-label="별점">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n} type="button" className="stars__btn" aria-label={`${n}점`}
+                    onClick={() => setReviewRating(n)}
+                  >
+                    {n <= reviewRating ? '★' : '☆'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="diff-chips">
+                {DIFF_OPTIONS.map((o) => (
+                  <button
+                    key={o.id} type="button"
+                    className={`chip ${reviewDiff === o.id ? 'on' : ''}`}
+                    onClick={() => setReviewDiff((d) => (d === o.id ? null : o.id))}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+
+              <textarea
+                className="review-textarea" maxLength={500} placeholder="생생한 후기와 나만의 응용 비법을 남겨보세요"
+                value={reviewText} onChange={(e) => setReviewText(e.target.value)}
+              />
+              <div className="review-form__foot">
+                <span className="muted" style={{ fontSize: 12 }}>{reviewText.length}/500자</span>
+                <Icon name="gift" size={14} strokeWidth={2} style={{ marginLeft: 'auto', marginRight: 4 }} />
+                <span className="muted" style={{ fontSize: 12 }}>후기 등록 시 +1P (하루 최대 3P)</span>
+              </div>
+              <button type="submit" className="btn btn--primary" disabled={!reviewText.trim() || reviewBusy} style={{ marginTop: 10 }}>
+                {reviewBusy ? '등록 중…' : '인증샷 등록하고 후기 남기기'}
+              </button>
+            </form>
           </section>
 
           <section style={{ marginTop: 14 }}>
@@ -95,7 +231,17 @@ export default function RecipeDetail() {
               <p className="muted" style={{ fontSize: 13, margin: '4px 0 0' }}>첫 댓글을 남겨 보세요.</p>
             ) : (
               list.map((c, i) => (
-                <div key={i} className="comment"><b>{c.author}</b>{c.text}</div>
+                <div key={i} className="comment comment2">
+                  {c.photoUrl && <img src={c.photoUrl} alt="" className="comment2__photo" />}
+                  <div className="comment2__body">
+                    <div className="comment2__head">
+                      <b>{c.author}</b>
+                      {c.rating ? <span className="comment2__stars">{'★'.repeat(c.rating)}{'☆'.repeat(5 - c.rating)}</span> : null}
+                      {c.difficultyLabel && <span className="badge badge--neutral">{c.difficultyLabel}</span>}
+                    </div>
+                    <span>{c.text}</span>
+                  </div>
+                </div>
               ))
             )}
           </section>

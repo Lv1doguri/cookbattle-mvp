@@ -19,14 +19,26 @@ function timeAgo(ts) {
 }
 
 export default function JoinDone() {
-  const { submission, fetchBattle } = useApp();
-  const [topic, setTopic] = useState('');
+  const { submission, fetchEntries, toggleNotify } = useApp();
+  const [title, setTitle] = useState('');
+  const [notifying, setNotifying] = useState(false);
+  const [toggling, setToggling] = useState(false);
 
   useEffect(() => {
-    fetchBattle().then((b) => setTopic(b.topic)).catch(() => {});
-  }, [fetchBattle]);
+    if (!submission) return;
+    fetchEntries(submission.battleId).then((l) => setTitle(l.title)).catch(() => {});
+  }, [submission, fetchEntries]);
 
   if (!submission) return <Navigate to="/battle" replace />;
+
+  const onToggleNotify = async () => {
+    setToggling(true);
+    try {
+      setNotifying(await toggleNotify(submission.entryId));
+    } finally {
+      setToggling(false);
+    }
+  };
 
   return (
     <Screen tone="soft">
@@ -44,9 +56,9 @@ export default function JoinDone() {
           <span className="done-check"><Icon name="check" size={52} strokeWidth={2.6} /></span>
         </div>
         <h1 className="done-title">참가 완료!</h1>
-        <span className="reward-pill"><Coin size={24} />+1P 적립</span>
+        <span className="reward-pill"><Coin size={24} />+{submission.pointsAwarded}P 적립</span>
         <p className="done-body">
-          {topic} 대결에 출품했어요.<br />대결이 끝나면 결과를 알려드릴게요.
+          {title}에 출품했어요.<br />대결이 끝나면 결과를 알려드릴게요.
         </p>
 
         <div className="card entry-card">
@@ -62,7 +74,10 @@ export default function JoinDone() {
       </div>
 
       <div className="done-actions">
-        <Button to="/battle/vote">출품작 보고 투표하기</Button>
+        <Button type="button" onClick={onToggleNotify} disabled={toggling} variant={notifying ? 'secondary' : 'primary'}>
+          <Icon name="bell" size={18} strokeWidth={2.2} fill={notifying ? 'currentColor' : 'none'} />
+          {notifying ? '대회 종료 알림 받는 중' : '대회 종료 시 알림 받기'}
+        </Button>
         <Link to="/battle" className="link-quiet">대결 홈으로</Link>
       </div>
     </Screen>

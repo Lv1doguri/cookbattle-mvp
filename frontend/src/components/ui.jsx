@@ -9,18 +9,24 @@ export function Button({ to, variant = 'primary', size, className = '', children
   return <button type="button" className={cls} {...rest}>{children}</button>;
 }
 
-export function Field({ id, label, error, hint, multiline = false, className = '', ...rest }) {
+// `icon`: Icon name shown inside the field, on the left. `rightSlot`: any node pinned to the
+// right inside the field (e.g. a password show/hide button or a "확인" action button).
+export function Field({ id, label, error, hint, multiline = false, className = '', icon, rightSlot, ...rest }) {
   const Tag = multiline ? 'textarea' : 'input';
   return (
     <div>
       {label && <label className="lbl" htmlFor={id}>{label}</label>}
-      <Tag
-        id={id}
-        className={`field ${multiline ? 'field--area' : ''} ${error ? 'field--error' : ''} ${className}`}
-        aria-invalid={!!error}
-        aria-describedby={error || hint ? `${id}-msg` : undefined}
-        {...rest}
-      />
+      <div className="field-wrap">
+        {icon && <span className="field-wrap__icon"><Icon name={icon} size={18} strokeWidth={2} /></span>}
+        <Tag
+          id={id}
+          className={`field ${multiline ? 'field--area' : ''} ${error ? 'field--error' : ''} ${icon ? 'field--icon' : ''} ${rightSlot ? 'field--right' : ''} ${className}`}
+          aria-invalid={!!error}
+          aria-describedby={error || hint ? `${id}-msg` : undefined}
+          {...rest}
+        />
+        {rightSlot && <span className="field-wrap__right">{rightSlot}</span>}
+      </div>
       {error && (
         <p id={`${id}-msg`} className="field-msg field-msg--error">
           <Icon name="alert" size={16} strokeWidth={2.2} />{error}

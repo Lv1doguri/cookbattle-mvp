@@ -36,7 +36,7 @@ export default function ProfileEdit() {
 
   if (!user) return null;
 
-  const nickError = !nickname.trim() ? '닉네임을 입력해 주세요' : nickTaken ? '이미 사용 중인 닉네임입니다' : '';
+  const nickError = !nickname.trim() ? '닉네임을 입력해 주세요' : nickTaken ? '이미 등록된 아이디입니다' : '';
   const pwError = password && password.length < 8 ? '비밀번호는 8자 이상이에요' : '';
 
   const onPhoto = (e) => {

@@ -161,11 +161,13 @@ export const LAST_RESULT = {
   ],
 };
 
+// 이름은 백엔드 SHOP_SEED(app/content.py)와 정확히 같아야 해요 — Shop.jsx가 이름으로
+// 매칭해서 아이콘/색만 여기서 가져가고, 가격·레벨·재고는 API 값을 그대로 써요.
 export const SHOP_ITEMS = [
-  { id: 'coffee', name: '커피 기프티콘', price: 1000, minLevel: 1, icon: 'coffee', bg: ['#EFE6D9', '#DECBB4'], ink: '#6E5A40' },
-  { id: 'meal', name: '학식 식권', price: 800, minLevel: 1, icon: 'cutlery', bg: ['#E2E2E2', '#CACACA'], ink: '#A85814' },
-  { id: 'cvs', name: '편의점 상품권', price: 3000, minLevel: 1, icon: 'store', bg: ['#E1E6EC', '#C7D2DE'], ink: '#4A6178' },
-  { id: 'chicken', name: '치킨 기프티콘', price: 5000, minLevel: 5, icon: 'burger', bg: ['#EAD9BE', '#D9BE8E'], ink: '#8A6640' },
+  { id: 'cvs', name: '편의점 1,000원권', price: 120, minLevel: 1, icon: 'store', bg: ['#E1E6EC', '#C7D2DE'], ink: '#4A6178' },
+  { id: 'coffee', name: '저가 커피 아메리카노', price: 240, minLevel: 2, icon: 'coffee', bg: ['#EFE6D9', '#DECBB4'], ink: '#6E5A40' },
+  { id: 'meal', name: '학식 식권', price: 650, minLevel: 3, icon: 'cutlery', bg: ['#E2E2E2', '#CACACA'], ink: '#A85814' },
+  { id: 'chicken', name: '치킨 기프티콘', price: 2600, minLevel: 5, icon: 'burger', bg: ['#EAD9BE', '#D9BE8E'], ink: '#8A6640' },
 ];
 
 export const ONBOARDING = [

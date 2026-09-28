@@ -69,6 +69,9 @@ export function adaptRecipeCard(r) {
     tags: r.is_essential ? ['자취 필수'] : [],
     tone: toneFor(r.id),
     photoUrl: imageUrl(r.photo_url),
+    valueScore: r.value_score,
+    caloriesKcal: r.calories_kcal,
+    portionLabel: r.portion_label,
   };
 }
 
@@ -77,7 +80,9 @@ export function adaptRecipeDetail(r) {
     ...adaptRecipeCard(r),
     author: r.author?.nickname ?? '요리왕',
     ingredients: r.ingredients.map((i) => [i.name, i.amount ?? '']),
-    steps: r.steps.map((s) => s.text),
+    steps: r.steps.map((s) => ({ text: s.text, minutes: s.minutes })),
+    failSafetyLabel: r.fail_safety_label,
+    chefTip: r.chef_tip,
   };
 }
 
@@ -95,16 +100,23 @@ export function adaptUser(me) {
     levelProgress: span > 0 ? (p.points - p.level_start_points) / span : 0,
     pointsToNextLevel: p.points_to_next_level,
     points: p.points,
+    savedRecipeCount: me.saved_recipe_count,
+    reviewCount: me.review_count,
+    streakWeeks: me.streak_weeks,
   };
 }
 
 export function adaptBattle(b) {
   return {
     id: b.id,
+    kind: b.kind, // 'daily' | 'theme'
     tier: b.tier,
+    tierLabel: b.tier_label,
+    title: b.title,
     topic: b.theme,
     subtitle: b.description,
     daysLeft: b.days_left,
+    secondsLeft: b.seconds_left,
     participants: b.participants,
     isMyGroup: b.is_my_group,
     isOpen: b.is_open,
@@ -113,6 +125,24 @@ export function adaptBattle(b) {
     myEntry: b.my_entry,
     lastResult: b.last_result,
   };
+}
+
+// 대결 홈의 "지난 대회 투표하기" 카드. 투표 가능한 지난 대회가 없으면 null.
+export function adaptVotingCard(v) {
+  if (!v) return null;
+  return {
+    battleId: v.battle_id,
+    kind: v.kind,
+    title: v.title,
+    groupLabel: v.group_label,
+    participants: v.participants,
+    hoursLeft: v.hours_left,
+    hasVoted: v.has_voted,
+  };
+}
+
+export function adaptBattleHome(h) {
+  return { daily: adaptBattle(h.daily), theme: adaptBattle(h.theme), voting: adaptVotingCard(h.voting) };
 }
 
 function timeOfDay(iso) {
@@ -148,12 +178,18 @@ export function adaptResult(r) {
     joined: r.me.joined,
     levelUp: r.me.leveled_up ? { from: r.me.level_from, to: r.me.level_to } : null,
     canShareRecipe: r.me.can_share_recipe,
+    sharedRecipeId: r.me.shared_recipe_id,
     ranking: r.top10.map((row) => ({
       rank: row.rank,
+      entryId: row.entry_id,
       name: row.user.nickname,
+      dishName: row.dish_name,
+      photoUrl: imageUrl(row.photo_url),
       votes: row.vote_count,
+      rankPoints: row.rank_points,
       me: row.is_me,
       sharedRecipe: row.is_winner,
+      canShareRecipe: row.can_share_recipe,
       note: noteFor(row),
     })),
   };
@@ -167,5 +203,6 @@ export function adaptShopItem(i) {
     minLevel: i.required_level,
     locked: i.state === 'locked',
     short: i.state === 'insufficient_points' ? i.points_short : 0,
+    photoUrl: imageUrl(i.photo_url),
   };
 }
