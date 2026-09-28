@@ -229,7 +229,7 @@ export function AppProvider({ children }) {
       photo: imageUrl(join.entry.photo_url),
       photos: join.entry.photo_urls.map(imageUrl),
       submittedAt: new Date(join.entry.created_at).getTime(),
-      pointsAwarded: join.points_awarded, // 참가(+10P), 첫 참가(+30P), 3주 연속(+20P)이 합쳐진 실제 값
+      pointsAwarded: join.points_awarded, // 참가(+3P), 첫 참가(+15P), 7일 연속(+15P)이 합쳐진 실제 값
     });
   }, [draftPhotos]);
 

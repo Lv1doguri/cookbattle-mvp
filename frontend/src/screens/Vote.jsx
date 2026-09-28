@@ -18,7 +18,7 @@ function VoteButton({ entry, votedEntryId, onVote, size }) {
       type="button" className={`vb ${votedEntryId ? 'off' : ''} ${size ? `vb--${size}` : ''}`}
       disabled={!!votedEntryId} onClick={() => onVote(entry.id)}
     >
-      투표하기 +2P
+      투표하기 +1P
     </button>
   );
 }

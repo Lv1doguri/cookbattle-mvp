@@ -172,7 +172,7 @@ export const SHOP_ITEMS = [
 
 export const ONBOARDING = [
   { title: '하단 탭으로 이동해요', body: '레시피 · 대결 · 홈 · 상점 · 메뉴를 오갈 수 있어요.\n홈에서는 내 레벨과 포인트를 볼 수 있어요.', highlight: 2, hint: '여기를 눌러요!' },
-  { title: '매주 대결에 참가해요', body: '내 실력 그룹의 주제로 요리하고\n앱 카메라로 인증하면 +1P를 받아요.', highlight: 1, hint: '대결은 여기!' },
+  { title: '매일 대결에 참가해요', body: '내 실력 그룹의 주제로 요리하고\n앱 카메라로 인증하면 +3P를 받아요.', highlight: 1, hint: '대결은 여기!' },
   { title: '마음에 드는 요리에 투표해요', body: '한 대결에 한 표씩 투표할 수 있어요.\n내 작품에는 투표할 수 없어요.', highlight: 1, hint: '1인 1표' },
   { title: '포인트로 기프티콘을 받아요', body: '모은 포인트는 상점에서 교환해요.\n레벨이 오르면 더 많은 상품이 열려요.', highlight: 3, hint: '상점은 여기!' },
 ];

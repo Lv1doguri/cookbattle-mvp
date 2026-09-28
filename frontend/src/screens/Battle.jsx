@@ -32,7 +32,11 @@ function BattleCard({ battle, tone, tag, art, submission }) {
       <div className="bcard__title">{battle.topic}</div>
       <div className="bcard__sub">{battle.subtitle}</div>
       <div className="bcard__meta">
-        <span className="bcard__dday"><Icon name="clock" size={12} strokeWidth={2.6} />{battle.daysLeft}일 남음</span>
+        {/* 일일 대결은 창이 최대 24시간이라 위 정밀 카운트다운(종료까지 HH:MM:SS)과 겹치므로 생략,
+            테마 대결(3일 창)에서만 대략적인 "n일 남음"을 같이 보여줘요. */}
+        {tone !== 'daily' && (
+          <span className="bcard__dday"><Icon name="clock" size={12} strokeWidth={2.6} />{battle.daysLeft}일 남음</span>
+        )}
         <span>참가자 {battle.participants}명</span>
       </div>
       {state === 'mine' && (
@@ -43,7 +47,7 @@ function BattleCard({ battle, tone, tag, art, submission }) {
       )}
       {state === 'can-join' && (
         <Link to="/battle/camera" state={{ kind: battle.kind, tier: battle.tier }} className="bcard__cta">
-          내 요리 출품하고 투표받기<span className="btn__tag">+8P</span>
+          내 요리 출품하고 투표받기<span className="btn__tag">+3P</span>
         </Link>
       )}
       {state === 'closed' && (
@@ -94,7 +98,7 @@ function TopVsPreview({ battleId, hasVoted }) {
         <span style={{ width: `${pct(first)}%` }} />
         <span style={{ width: `${pct(second)}%` }} />
       </div>
-      <span className="vs-preview__cta">{hasVoted ? '전체 순위 보기' : '지금 투표하러 가기 +2P'}</span>
+      <span className="vs-preview__cta">{hasVoted ? '전체 순위 보기' : '지금 투표하러 가기 +1P'}</span>
     </Link>
   );
 }
@@ -176,7 +180,7 @@ export default function Battle() {
                     </div>
                     <div className="pastcard__bonuses">
                       <span className="bonus"><Icon name="clock" size={12} strokeWidth={2.6} />투표 마감까지 {home.voting.hoursLeft}시간</span>
-                      <span className="bonus">{home.voting.hasVoted ? '투표 완료' : '투표 참여 시 +2P'}</span>
+                      <span className="bonus">{home.voting.hasVoted ? '투표 완료' : '투표 참여 시 +1P'}</span>
                     </div>
                   </Link>
                   <TopVsPreview battleId={home.voting.battleId} hasVoted={home.voting.hasVoted} />

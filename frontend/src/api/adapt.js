@@ -202,6 +202,7 @@ export function adaptShopItem(i) {
     price: i.price_points,
     minLevel: i.required_level,
     locked: i.state === 'locked',
+    soldOut: i.state === 'sold_out',
     short: i.state === 'insufficient_points' ? i.points_short : 0,
     photoUrl: imageUrl(i.photo_url),
   };

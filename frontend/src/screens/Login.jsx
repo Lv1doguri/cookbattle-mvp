@@ -56,7 +56,7 @@ export default function Login() {
           </div>
           <p className="login-brand__tag">요리하고, 공유하고, 대결하다</p>
           <span className="login-brand__chip">
-            <Icon name="trophy" size={15} strokeWidth={2} />오늘 배틀에 투표하면 +2P 적립!
+            <Icon name="trophy" size={15} strokeWidth={2} />오늘 배틀에 투표하면 +1P 적립!
           </span>
         </div>
 

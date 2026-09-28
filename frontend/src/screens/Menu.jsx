@@ -8,7 +8,7 @@ import { adaptRecipeCard } from '../api/adapt';
 import { skillLabel, won } from '../data/mock';
 import { useApp } from '../state/AppContext';
 
-const STREAK_CYCLE = 3; // 백엔드 STREAK_WEEKS와 동일 (3주 연속마다 보너스)
+const STREAK_CYCLE = 7; // 백엔드 STREAK_DAYS와 동일 (7일 연속마다 보너스)
 
 export default function Menu() {
   const {
@@ -81,7 +81,7 @@ export default function Menu() {
           <div className="card streak-card">
             <div className="streak-card__head">
               <span>🔥 배틀 참가 스트릭</span>
-              <span>{user.streakWeeks ? `${user.streakWeeks}주 연속 참가 중!` : '이번 주부터 시작해보세요'}</span>
+              <span>{user.streakWeeks ? `${user.streakWeeks}일 연속 참가 중!` : '오늘부터 시작해보세요'}</span>
             </div>
             <div className="streak-dots">
               {Array.from({ length: STREAK_CYCLE }, (_, i) => (

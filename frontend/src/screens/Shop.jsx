@@ -73,6 +73,8 @@ export default function Shop() {
                 <div className="gp">{won(item.price)}P</div>
                 {item.locked ? (
                   <button type="button" className="gb off" disabled>Lv.{item.minLevel}부터 교환 가능</button>
+                ) : item.soldOut ? (
+                  <button type="button" className="gb off" disabled>이번 달 품절</button>
                 ) : item.short > 0 ? (
                   <button type="button" className="gb off" disabled>{won(item.short)}P 더 필요해요</button>
                 ) : (
@@ -83,7 +85,7 @@ export default function Shop() {
           </div>
         )}
         {error && <p className="muted" style={{ color: 'var(--danger, #d64545)' }}>{error}</p>}
-        <p className="note" style={{ marginBottom: 20 }}>포인트는 대결 참가(+10P)와 순위 보상으로 모여요</p>
+        <p className="note" style={{ marginBottom: 20 }}>포인트는 매일 대결 참가(+3P)와 순위 보상으로 모여요</p>
       </div>
 
       <TabBar />
