@@ -1,4 +1,5 @@
 import datetime as dt
+import random
 from typing import List, Optional, Sequence
 
 from sqlalchemy import select, update
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from .. import clock
 from ..content import (
+    ANGLE_BY_ID,
     BATTLE_EPOCH,
     BATTLE_THEMES,
     MIN_PARTICIPANTS,
@@ -59,6 +61,13 @@ def can_vote_now(battle: Battle, now: dt.datetime) -> bool:
     return phase(battle, now) == BattlePhase.voting
 
 
+def _ensure_required_angle(db: Session, battle: Battle) -> None:
+    """Self-heals a battle created before the angle-photo feature existed."""
+    if battle.required_angle is None:
+        battle.required_angle = random.choice(list(ANGLE_BY_ID))
+        db.commit()
+
+
 def get_or_create_daily_battle(db: Session, tier: Tier, now: dt.datetime) -> Battle:
     """'오늘의 대결': the battle for this KST week and skill group. Created lazily on first request.
 
@@ -68,6 +77,7 @@ def get_or_create_daily_battle(db: Session, tier: Tier, now: dt.datetime) -> Bat
     stmt = select(Battle).where(Battle.kind == BattleKind.daily, Battle.week_start == week_start, Battle.tier == tier)
     battle = db.scalar(stmt)
     if battle is not None:
+        _ensure_required_angle(db, battle)
         return battle
 
     schedule = BATTLE_THEMES[((week_start - BATTLE_EPOCH).days // 7) % len(BATTLE_THEMES)]
@@ -81,6 +91,7 @@ def get_or_create_daily_battle(db: Session, tier: Tier, now: dt.datetime) -> Bat
             starts_at=clock.kst_day_bounds(week_start)[0],
             ends_at=clock.kst_day_bounds(week_start + dt.timedelta(days=7))[0],
             voting_ends_at=clock.kst_day_bounds(week_start + dt.timedelta(days=7))[0] + VOTING_WINDOW,
+            required_angle=random.choice(list(ANGLE_BY_ID)),
         )
     )
     try:
@@ -103,6 +114,7 @@ def get_or_create_theme_battle(db: Session, now: dt.datetime) -> Battle:
     stmt = select(Battle).where(Battle.kind == BattleKind.theme, Battle.week_start == cycle_start)
     battle = db.scalar(stmt)
     if battle is not None:
+        _ensure_required_angle(db, battle)
         return battle
 
     schedule = THEME_BATTLES[cycle_index % len(THEME_BATTLES)]
@@ -118,6 +130,7 @@ def get_or_create_theme_battle(db: Session, now: dt.datetime) -> Battle:
             starts_at=starts_at,
             ends_at=ends_at,
             voting_ends_at=ends_at + VOTING_WINDOW,
+            required_angle=random.choice(list(ANGLE_BY_ID)),
         )
     )
     try:
@@ -232,6 +245,7 @@ def entry_out(entry: Entry, state: str, ratings: Sequence[int] = ()) -> EntryOut
         dish_name=entry.dish_name,
         description=entry.description,
         photo_url=image_url(entry.photo.filename),
+        angle_photo_url=image_url(entry.angle_photo.filename) if entry.angle_photo else None,
         author=user_brief(entry.user),
         vote_count=entry.vote_count,
         created_at=entry.created_at,

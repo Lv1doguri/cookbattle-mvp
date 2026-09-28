@@ -42,6 +42,7 @@ def upload_camera_photo(
             Photo.user_id == user.id,
             Photo.captured_at < now - PHOTO_TTL,
             Photo.id.not_in(select(Entry.photo_id)),
+            Photo.id.not_in(select(Entry.angle_photo_id).where(Entry.angle_photo_id.is_not(None))),
         )
     ).all()
     for old in stale:

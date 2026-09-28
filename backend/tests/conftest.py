@@ -13,11 +13,12 @@ import datetime as dt  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
 from app import clock  # noqa: E402
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import User  # noqa: E402
+from app.models import PendingSignup, User  # noqa: E402
 from app.services import throttle  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -69,12 +70,25 @@ def kst_at(week: int = 0, weekday: int = 0, hour: int = 12) -> dt.datetime:
     return dt.datetime.combine(day, dt.time(hour), tzinfo=clock.KST).astimezone(dt.timezone.utc)
 
 
+def pending_token(email: str) -> str:
+    """Reads the verification token straight from the DB, standing in for the email a real
+    SMTP send would deliver (tests run with SMTP_HOST unset, so send_verification_email only logs)."""
+    with SessionLocal() as db:
+        pending = db.scalar(select(PendingSignup).where(PendingSignup.email == email.strip().lower()))
+        return pending.token
+
+
 def signup(client, email, nickname=None, tier="intermediate"):
+    """Signs up and immediately clicks the verification link, so callers get back a logged-in
+    user exactly like before email verification existed. Tests that care about the pending state
+    itself (not yet verified) should call /auth/signup directly instead."""
     r = client.post(
         "/auth/signup",
         json={"email": email, "nickname": nickname or "u_" + email.split("@")[0], "password": PASSWORD, "tier": tier},
     )
-    assert r.status_code == 201, r.text
+    assert r.status_code == 202, r.text
+    r = client.post("/auth/verify-email", json={"token": pending_token(email)})
+    assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}, r.json()["user"]
 
 
@@ -97,13 +111,19 @@ def camera_photo(client, headers, data=None):
     return r.json()
 
 
-def join(client, headers, battle_id, dish="치즈 스크램블 에그", description="우유를 조금 넣었어요", photo_id=None):
-    """Take a fresh photo (unless one is given) and submit it to the battle."""
+def join(
+    client, headers, battle_id, dish="치즈 스크램블 에그", description="우유를 조금 넣었어요",
+    photo_id=None, angle_photo_id=None,
+):
+    """Take fresh photos (unless given) and submit them to the battle. No ANTHROPIC_API_KEY is set
+    in tests, so services.vision.check_angle_photos always passes (see its dev fallback)."""
     if photo_id is None:
         photo_id = camera_photo(client, headers)["photo_id"]
+    if angle_photo_id is None:
+        angle_photo_id = camera_photo(client, headers)["photo_id"]
     return client.post(
         f"/battles/{battle_id}/entries",
-        json={"photo_id": photo_id, "dish_name": dish, "description": description},
+        json={"photo_id": photo_id, "angle_photo_id": angle_photo_id, "dish_name": dish, "description": description},
         headers=headers,
     )
 

@@ -28,6 +28,21 @@ class SignupIn(BaseModel):
         return _check_password_bytes(v)
 
 
+class SignupPendingOut(BaseModel):
+    """[가입하기]의 응답. 계정은 아직 안 만들어졌어요 — 메일의 링크를 눌러야 완료돼요."""
+
+    message: str
+    email: str
+
+
+class VerifyEmailIn(BaseModel):
+    token: str
+
+
+class ResendVerificationIn(BaseModel):
+    email: EmailStr
+
+
 class LoginIn(BaseModel):
     # 이메일을 넣으세요. 이메일 없이 가입한 계정은 같은 칸에 닉네임을 넣으면 돼요('@'가 있으면 이메일로 봐요).
     email: str = Field(min_length=1, max_length=255)
@@ -224,7 +239,8 @@ class PhotoOut(BaseModel):
 
 
 class JoinIn(BaseModel):
-    photo_id: int
+    photo_id: int  # 기본(정면) 사진
+    angle_photo_id: int  # 대결이 요구하는 구도로 찍은 추가 사진 (BattleOut.required_angle 참고)
     dish_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
     description: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
 
@@ -235,6 +251,7 @@ class EntryOut(BaseModel):
     dish_name: str
     description: str
     photo_url: str
+    angle_photo_url: Optional[str] = None  # 이 기능 이전에 만들어진 출품작은 null
     author: UserBrief
     vote_count: int
     created_at: dt.datetime
@@ -296,6 +313,9 @@ class BattleOut(BaseModel):
     theme: str  # "계란 요리"
     description: str
     week_label: str
+    required_angle: str  # content.ANGLE_BY_ID의 id (예: "top")
+    required_angle_label: str  # "위에서 내려다본 모습"
+    required_angle_instruction: str  # 카메라 화면에 그대로 보여줄 안내 문구
     starts_at: dt.datetime
     ends_at: dt.datetime  # 요리(참가) 기간 마감
     voting_ends_at: dt.datetime  # 투표 마감 (ends_at + 24시간)

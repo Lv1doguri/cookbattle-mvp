@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .. import clock
-from ..content import FIRST_BATTLE_BONUS, PARTICIPATION_POINTS, PHOTO_TTL, VOTE_POINTS
+from ..content import ANGLE_BY_ID, FIRST_BATTLE_BONUS, PARTICIPATION_POINTS, PHOTO_TTL, VOTE_POINTS
 from ..database import get_db
 from ..enums import TIER_LABEL, BattleKind, BattlePhase, Tier
 from ..errors import ApiError
@@ -45,8 +45,10 @@ from ..services.battles import (
     ranked_entries,
     week_label,
 )
+from ..services.images import read_saved_image
 from ..services.points import grant_points
 from ..services.recipes import build_detail, recipe_query
+from ..services import vision
 
 router = APIRouter(tags=["battles"])
 
@@ -63,7 +65,7 @@ def _get_battle(db: Session, battle_id: int) -> Battle:
 def _my_entry(db: Session, battle_id: int, user_id: int) -> Optional[Entry]:
     return db.scalar(
         select(Entry)
-        .options(joinedload(Entry.user), joinedload(Entry.photo))
+        .options(joinedload(Entry.user), joinedload(Entry.photo), joinedload(Entry.angle_photo))
         .where(Entry.battle_id == battle_id, Entry.user_id == user_id)
     )
 
@@ -109,6 +111,7 @@ def _battle_out(db: Session, battle: Battle, user: User, now) -> BattleOut:
     ph = phase(battle, now)
     deadline = battle.ends_at if ph == BattlePhase.cooking else battle.voting_ends_at
     seconds_left = max(0, int((deadline - now).total_seconds()))
+    angle = ANGLE_BY_ID[battle.required_angle]
     return BattleOut(
         id=battle.id,
         kind=battle.kind,
@@ -118,6 +121,9 @@ def _battle_out(db: Session, battle: Battle, user: User, now) -> BattleOut:
         theme=battle.theme,
         description=battle.description,
         week_label=week_label(battle.week_start),
+        required_angle=angle["id"],
+        required_angle_label=angle["label"],
+        required_angle_instruction=angle["instruction"],
         starts_at=battle.starts_at,
         ends_at=battle.ends_at,
         voting_ends_at=battle.voting_ends_at,
@@ -201,7 +207,7 @@ def list_entries(battle_id: int, user: User = Depends(get_current_user), db: Ses
 
     entries = db.scalars(
         select(Entry)
-        .options(joinedload(Entry.user), joinedload(Entry.photo))
+        .options(joinedload(Entry.user), joinedload(Entry.photo), joinedload(Entry.angle_photo))
         .where(Entry.battle_id == battle_id)
         .order_by(Entry.created_at.asc(), Entry.id.asc())
     ).all()
@@ -223,6 +229,18 @@ def list_entries(battle_id: int, user: User = Depends(get_current_user), db: Ses
     )
 
 
+def _claim_photo(db: Session, user: User, photo_id: int, now) -> Photo:
+    photo = db.get(Photo, photo_id)
+    if photo is None or photo.user_id != user.id:
+        raise ApiError(404, "photo_not_found", "촬영한 사진을 찾을 수 없어요. 다시 촬영해주세요")
+    used = select(Entry.id).where((Entry.photo_id == photo.id) | (Entry.angle_photo_id == photo.id))
+    if db.scalar(used) is not None:
+        raise ApiError(409, "photo_already_used", "이미 제출한 사진이에요. 다시 촬영해주세요")
+    if now > photo.captured_at + PHOTO_TTL:
+        raise ApiError(400, "photo_expired", "촬영한 지 너무 오래됐어요. 다시 촬영해주세요")
+    return photo
+
+
 @router.post("/battles/{battle_id}/entries", response_model=JoinOut, status_code=201)
 def join_battle(
     battle_id: int,
@@ -230,7 +248,11 @@ def join_battle(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """요리 인증 화면의 [제출]. 먼저 `POST /photos`로 받은 photo_id를 함께 보내요. 참가하면 +1P."""
+    """요리 인증 화면의 [제출]. `POST /photos`로 받은 photo_id(기본 사진) + angle_photo_id(대결이
+    요구하는 구도로 찍은 사진, BattleOut.required_angle 참고)를 함께 보내요. 참가하면 +1P.
+
+    두 사진은 AI가 같은 음식인지, 두 번째 사진이 실제로 요청한 구도인지 확인해요(온라인에서 퍼온
+    사진 도용 방지) — 통과하지 못하면 400 angle_mismatch."""
     now = clock.utcnow()
     finalize_due_battles(db, now)
     battle = _get_battle(db, battle_id)
@@ -242,18 +264,25 @@ def join_battle(
     if _my_entry(db, battle.id, user.id) is not None:
         raise ApiError(409, "already_entered", "한 대결에는 한 번만 참가할 수 있어요")
 
-    photo = db.get(Photo, body.photo_id)
-    if photo is None or photo.user_id != user.id:
-        raise ApiError(404, "photo_not_found", "촬영한 사진을 찾을 수 없어요. 다시 촬영해주세요")
-    if db.scalar(select(Entry.id).where(Entry.photo_id == photo.id)) is not None:
-        raise ApiError(409, "photo_already_used", "이미 제출한 사진이에요. 다시 촬영해주세요")
-    if now > photo.captured_at + PHOTO_TTL:
-        raise ApiError(400, "photo_expired", "촬영한 지 너무 오래됐어요. 다시 촬영해주세요")
+    photo = _claim_photo(db, user, body.photo_id, now)
+    angle_photo = _claim_photo(db, user, body.angle_photo_id, now)
+    if angle_photo.id == photo.id:
+        raise ApiError(400, "same_photo_twice", "정면 사진과 구도 사진은 서로 달라야 해요")
+
+    angle = ANGLE_BY_ID.get(battle.required_angle, next(iter(ANGLE_BY_ID.values())))
+    ok, reason = vision.check_angle_photos(
+        read_saved_image(photo.filename), photo.filename.rsplit(".", 1)[-1],
+        read_saved_image(angle_photo.filename), angle_photo.filename.rsplit(".", 1)[-1],
+        angle["label"],
+    )
+    if not ok:
+        raise ApiError(400, "angle_mismatch", reason)
 
     entry = Entry(
         battle_id=battle.id,
         user_id=user.id,
         photo_id=photo.id,
+        angle_photo_id=angle_photo.id,
         dish_name=body.dish_name,
         description=body.description,
         created_at=now,

@@ -86,6 +86,23 @@ class User(Base):
 Index("uq_users_nickname_lower", func.lower(User.nickname), unique=True)
 
 
+class PendingSignup(Base):
+    """A signup that hasn't clicked its verification link yet. No login is possible from this row —
+    verify_email() consumes it and creates the real User. Expired/superseded rows are swept lazily
+    whenever a new signup comes in for the same email or nickname."""
+
+    __tablename__ = "pending_signups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    nickname: Mapped[str] = mapped_column(String(16))
+    password_hash: Mapped[str] = mapped_column(String(100))
+    tier: Mapped[Tier] = mapped_column(_enum(Tier))
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
+    expires_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
+
+
 class Photo(Base):
     """A photo taken with the in-app camera. captured_at is stamped by the server at upload."""
 
@@ -131,6 +148,9 @@ class Battle(Base):
     # Set once, when ranks and rank points have been handed out (or the battle was voided).
     finalized_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
     is_void: Mapped[bool] = mapped_column(Boolean, default=False)
+    # One of content.ANGLE_BY_ID, picked at random when the battle is created (services.battles).
+    # Nullable so battles from before this feature existed self-heal on next read instead of failing.
+    required_angle: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
 
 class Entry(Base):
@@ -143,6 +163,10 @@ class Entry(Base):
     battle_id: Mapped[int] = mapped_column(ForeignKey("battles.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id"), unique=True)  # a photo backs one entry only
+    # The second, battle.required_angle-matching photo (services/vision.py checks it at submit time).
+    # Nullable only so entries from before this feature existed don't break; the router always
+    # requires it for new submissions.
+    angle_photo_id: Mapped[Optional[int]] = mapped_column(ForeignKey("photos.id"), unique=True, nullable=True)
     dish_name: Mapped[str] = mapped_column(String(60))
     description: Mapped[str] = mapped_column(String(500), default="")
     vote_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -157,7 +181,8 @@ class Entry(Base):
 
     user: Mapped["User"] = relationship()
     battle: Mapped["Battle"] = relationship()
-    photo: Mapped["Photo"] = relationship()
+    photo: Mapped["Photo"] = relationship(foreign_keys=[photo_id])
+    angle_photo: Mapped[Optional["Photo"]] = relationship(foreign_keys=[angle_photo_id])
 
 
 class EntryComment(Base):

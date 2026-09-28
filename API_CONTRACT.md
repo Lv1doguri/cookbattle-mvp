@@ -12,6 +12,10 @@
 > - **뺀 것**: 친구 기능(backend-full-b에는 있었지만, 이 디자인의 19개 화면 어디에도 친구 화면이 없어서 이번 통합에서는 빠졌어요. 필요하면 추가 가능).
 > - 테스트: pytest 29개(기존) + 신규 기능 7개 = **36개** 전부 통과. `cd backend && pytest`
 
+> **이후 업데이트**
+> - **이메일 인증 회원가입 (신규)**: `POST /auth/signup`은 이제 계정을 바로 만들지 않고 202 `SignupPendingOut`만 반환, 입력한 이메일로 인증 메일을 보내요(`PendingSignup`, TTL 30분). 링크의 `POST /auth/verify-email`을 눌러야 실제 계정이 생기고 로그인돼요. `POST /auth/resend-verification`로 재전송. `SMTP_HOST`가 `.env`에 없으면 실제 메일 대신 서버 로그에 링크만 남겨요(로컬 개발용).
+> - **구도 인증 AI (신규, 온라인 사진 도용 방지)**: 대결 참가엔 정면 사진 + 대결마다 무작위로 정해지는 구도 사진, 두 장이 필요해요(`BattleOut.required_angle*`, `POST /battles/{id}/entries`의 `angle_photo_id`). Claude Vision API(`services/vision.py`)가 같은 음식인지·요청한 구도가 맞는지 판정하고, 실패하면 400 `angle_mismatch`. `ANTHROPIC_API_KEY`가 없으면 로컬 개발용으로 판정을 건너뛰어요.
+
 ## 공통 규칙
 
 - **인증**: 로그인/회원가입/닉네임 중복확인 외 전부 `Authorization: Bearer <access_token>` 필요. 없거나 틀리면 401. 로그아웃은 토큰을 지우면 끝(서버 호출 없음).
@@ -37,8 +41,8 @@
 | 09 | RecipeDetail | `GET /recipes/{id}` · 저장 `POST/DELETE /recipes/{id}/save` · 댓글 `GET/POST /recipes/{id}/reviews` |
 | 10 | Menu | `GET /me`(프로필 요약, `saved_recipe_count`, `review_count`) · 저장한 레시피 `GET /me/saved-recipes` · 최근 본 레시피 `GET /me/recent-recipes` · 내가 쓴 후기 `GET /me/reviews` |
 | 11 | Offline | 프론트 화면. 요청이 네트워크 오류로 실패하면 이 화면으로 |
-| 12b | CookVerifyCamera (촬영) | 찍자마자 `POST /photos` (multipart, 필드명 `file`) → `{photo_id, photo_url, captured_at, expires_at}`. 이전에 올라온 사진과 같은 사진(재압축·리사이즈 포함)이면 409 `photo_reused` |
-| 12 | CookVerify (요리 인증) | "촬영 완료" 미리보기는 위 `photo_url`. [다시 촬영]은 다시 `POST /photos` · [제출] `POST /battles/{battle_id}/entries` `{photo_id, dish_name, description}` (JSON) — `battle_id`는 오늘의 대결이면 `GET /battles/current` 응답의 `id`, 테마 대결이면 `GET /battles/current?kind=theme`의 `id` |
+| 12b | CookVerifyCamera (촬영) | 정면 사진 + `BattleOut.required_angle_instruction`이 안내하는 구도 사진, 두 장을 각각 `POST /photos` (multipart, 필드명 `file`) → `{photo_id, photo_url, captured_at, expires_at}`. 이전에 올라온 사진과 같은 사진(재압축·리사이즈 포함)이면 409 `photo_reused` |
+| 12 | CookVerify (요리 인증) | "촬영 완료" 미리보기는 두 `photo_url`. [다시 촬영]은 다시 `POST /photos` · [제출] `POST /battles/{battle_id}/entries` `{photo_id, angle_photo_id, dish_name, description}` (JSON) — `battle_id`는 오늘의 대결이면 `GET /battles/current` 응답의 `id`, 테마 대결이면 `GET /battles/current?kind=theme`의 `id` |
 | 13 | JoinDone | 제출 응답 그대로: `points_awarded`(참가 10P, **첫 대결이면 +30P 추가**), `entry`("치즈 스크램블 에그 by 나") · [대회 종료 시 알림 받기] `POST /entries/{entry_id}/notify` (다시 누르면 꺼져요) |
 | 14 | Vote | `GET /battles/{battle_id}/entries` · [투표하기 +2P] `POST /entries/{entry_id}/vote` (응답에 `points_awarded`) |
 | 15 | BattleResult | `GET /battles/{battle_id}/result` |
@@ -74,10 +78,12 @@
 - 각 배틀의 `phase`: `cooking`(참가 가능) → `voting`(대회 종료 후 24시간, 투표만) → `closed`(집계 완료).
 
 **참가 흐름 (촬영 → 요리 인증 → 제출)**
-1. 카메라 화면에서 찍자마자 `POST /photos`. 서버가 촬영 시각을 찍고, **1시간 안에** [제출]해야 해요(`expires_at`). 지나면 400 `photo_expired` → 다시 촬영. 이전에 올라온 사진과 같은 사진이면 409 `photo_reused` → 다시 촬영.
-2. [제출] `POST /battles/{id}/entries` `{"photo_id": 1, "dish_name": "치즈 스크램블 에그", "description": "…"}`. 한 사진은 한 번만 쓸 수 있어요(409 `photo_already_used`).
+1. 카메라 화면에서 정면 사진, 이어서 `BattleOut.required_angle_instruction`이 안내하는 구도로 한 장 더, 총 두 장을 각각 `POST /photos`. 서버가 촬영 시각을 찍고, **1시간 안에** [제출]해야 해요(`expires_at`). 지나면 400 `photo_expired` → 다시 촬영. 이전에 올라온 사진과 같은 사진이면 409 `photo_reused` → 다시 촬영.
+2. [제출] `POST /battles/{id}/entries` `{"photo_id": 1, "angle_photo_id": 2, "dish_name": "치즈 스크램블 에그", "description": "…"}`. 두 사진은 서로 달라야 하고(400 `same_photo_twice`), 한 사진은 한 번만(정면이든 구도든) 쓸 수 있어요(409 `photo_already_used`).
 3. 갤러리 사진 차단은 앱(카메라 API)에서 하는 거라, 서버는 "카메라 업로드 API로 올라온 1시간 이내의, 재사용 아닌 사진"인지만 확인해요.
-4. 참가 완료 화면의 [대회 종료 시 알림 받기]는 `POST /entries/{entry_id}/notify`(토글). **MVP: 실제 알림 발송은 없고 원하는지만 저장돼요.**
+4. **구도 인증 (신규, 온라인 사진 도용 방지)**: `POST /battles/{id}/entries`는 두 사진을 비전 AI(`services/vision.py`, Claude Vision)로 심사해요 — 같은 음식인지, 두 번째 사진이 정말 요청한 구도인지. 통과 못 하면 400 `angle_mismatch`(`detail`에 이유). `ANTHROPIC_API_KEY`가 `.env`에 없으면 로컬 개발용으로 이 검사를 건너뛰고 항상 통과시켜요.
+5. 어떤 구도를 요구할지는 대결이 만들어질 때(주/사이클마다) 무작위로 정해지고 고정돼요(`BattleOut.required_angle`/`required_angle_label`/`required_angle_instruction`, `content.ANGLE_POOL`에서 정의) — 미리 준비해둔 사진으로는 맞추기 어렵게 하는 게 목적이에요.
+6. 참가 완료 화면의 [대회 종료 시 알림 받기]는 `POST /entries/{entry_id}/notify`(토글). **MVP: 실제 알림 발송은 없고 원하는지만 저장돼요.**
 
 **투표** — **대회가 끝난 뒤 24시간 동안만** 할 수 있어요(요리 기간에는 아무도 못 해요). `GET /battles/{id}/entries` → 항목마다 `state`로 버튼을 정해요: `votable`=[투표하기 +2P] · `mine`=[내 작품] "투표 불가" · `voted`=내가 투표한 작품 · `vote_done`=이미 다른 작품에 투표 · `unavailable`=투표할 수 없는 상태(요리 기간·마감·다른 그룹). 이미 투표했는지는 `has_voted`. 투표하면 즉시 **+2P**(`VoteOut.points_awarded`). 각 항목에 `comment_count`/`rating_avg`/`rating_count`도 붙어서 "★4.5 (3)" 같은 표시가 가능해요.
 
@@ -133,7 +139,7 @@
 
 ## 에러 코드 (자주 쓰는 것)
 
-`nickname_taken`(409) · `email_taken`(409) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409, 신규 — 재사용된 사진) · `photo_not_found`(404) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400, 신규) · `monthly_limit_reached`(400, 신규) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409, 신규) · `not_your_comment`(403, 신규) · `admin_only`(403, 신규)
+`nickname_taken`(409) · `email_taken`(409) · `verification_already_sent`(409, 신규 — 인증 메일 재전송 전 이미 대기 중) · `invalid_or_expired_token`(400, 신규 — 인증 링크 만료/오류) · `email_not_verified`(403, 신규 — 로그인 시도했지만 아직 인증 안 됨) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409 — 재사용된 사진) · `photo_not_found`(404) · `same_photo_twice`(400, 신규 — 정면/구도 사진이 같음) · `angle_mismatch`(400, 신규 — 구도 인증 AI 판정 실패) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400) · `monthly_limit_reached`(400) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409) · `not_your_comment`(403) · `admin_only`(403)
 
 ## 디자인에서 정해지지 않아 백엔드가 가정한 것
 

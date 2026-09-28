@@ -1,13 +1,27 @@
 import datetime as dt
 
+from app.content import ANGLE_BY_ID, EMAIL_VERIFICATION_TTL, SIGNUP_BONUS
 from app.database import SessionLocal
 from app.enums import Tier
 from app.models import Exchange, LedgerEntry, User
+from app.services import vision
 from app.services.battles import get_or_create_daily_battle, get_or_create_theme_battle, week_label
 from app.services.points import level_for
 from sqlalchemy import func, select
 
-from .conftest import PASSWORD, PNG, camera_photo, current_battle, distinct_photo, group, join, kst_at, set_user, signup
+from .conftest import (
+    PASSWORD,
+    PNG,
+    camera_photo,
+    current_battle,
+    distinct_photo,
+    group,
+    join,
+    kst_at,
+    pending_token,
+    set_user,
+    signup,
+)
 
 
 def _iso(s: str) -> dt.datetime:
@@ -43,11 +57,16 @@ def run_battle(client, freeze, votes_for=(2, 2, 1, 0)):
 
 # ------------------------------------------------------------------ auth
 def test_signup_login_and_me(client):
-    r = client.post(
+    pending = client.post(
         "/auth/signup",
         json={"email": "Yuri@Test.com", "nickname": "Yuri", "password": PASSWORD, "tier": "intermediate"},
     )
-    assert r.status_code == 201
+    assert pending.status_code == 202 and pending.json()["email"] == "yuri@test.com"
+    not_yet = client.post("/auth/login", json={"email": "yuri@test.com", "password": PASSWORD})
+    assert not_yet.status_code == 403 and not_yet.json()["code"] == "email_not_verified"
+
+    r = client.post("/auth/verify-email", json={"token": pending_token("yuri@test.com")})
+    assert r.status_code == 200
     me = r.json()["user"]
     assert (me["email"], me["nickname"], me["tier"], me["tier_label"]) == ("yuri@test.com", "Yuri", "intermediate", "중급")
     assert me["progress"] == {
@@ -165,11 +184,8 @@ def test_signup_requires_email_and_nickname_login_still_works(client):
     missing_email = client.post("/auth/signup", json={"nickname": "자취생", "password": PASSWORD, "tier": "beginner"})
     assert missing_email.status_code == 422
 
-    r = client.post(
-        "/auth/signup", json={"email": "jachwi@test.com", "nickname": "자취생", "password": PASSWORD, "tier": "beginner"}
-    )
-    assert r.status_code == 201 and r.json()["user"]["email"] == "jachwi@test.com"
-    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    headers, me = signup(client, "jachwi@test.com", nickname="자취생", tier="beginner")
+    assert me["email"] == "jachwi@test.com"
 
     assert client.post("/auth/login", json={"email": "자취생", "password": PASSWORD}).status_code == 200
     assert client.post("/auth/login", json={"email": "  자취생 ", "password": PASSWORD}).status_code == 200
@@ -212,6 +228,83 @@ def test_successful_login_clears_the_failure_count(client):
     assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
 
 
+def test_email_verification_flow(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    pending = client.post(
+        "/auth/signup", json={"email": "a@test.com", "nickname": "새싹요리사", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert pending.status_code == 202
+    assert pending.json() == {
+        "message": "인증 메일을 보냈어요. 메일함을 확인하고 링크를 눌러 가입을 완료해주세요",
+        "email": "a@test.com",
+    }
+
+    not_verified = client.post("/auth/login", json={"email": "a@test.com", "password": PASSWORD})
+    assert not_verified.status_code == 403 and not_verified.json()["code"] == "email_not_verified"
+
+    # can't start a second signup for the same email while one is still pending
+    again = client.post(
+        "/auth/signup", json={"email": "a@test.com", "nickname": "다른닉", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert again.status_code == 409 and again.json()["code"] == "verification_already_sent"
+
+    # the pending nickname is reserved too, so nobody else can grab it in the meantime
+    dup_nick = client.post(
+        "/auth/signup", json={"email": "b@test.com", "nickname": "새싹요리사", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert dup_nick.status_code == 409 and dup_nick.json()["code"] == "nickname_taken"
+
+    bad_token = client.post("/auth/verify-email", json={"token": "not-a-real-token"})
+    assert bad_token.status_code == 400 and bad_token.json()["code"] == "invalid_or_expired_token"
+
+    old_token = pending_token("a@test.com")
+    resent = client.post("/auth/resend-verification", json={"email": "A@test.com"})
+    assert resent.status_code == 200 and resent.json()["email"] == "a@test.com"
+    assert client.post("/auth/verify-email", json={"token": old_token}).status_code == 400  # replaced by the resend
+
+    new_token = pending_token("a@test.com")
+    assert new_token != old_token
+    verified = client.post("/auth/verify-email", json={"token": new_token})
+    assert verified.status_code == 200
+    me = verified.json()["user"]
+    assert me["email"] == "a@test.com" and me["nickname"] == "새싹요리사"
+    assert me["progress"]["total_points"] == SIGNUP_BONUS  # 가입 보너스는 인증 완료 시점에 지급됨
+
+    # the account is real now: the email/nickname are taken for good, and login works
+    dup_after = client.post(
+        "/auth/signup", json={"email": "a@test.com", "nickname": "새이름", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert dup_after.status_code == 409 and dup_after.json()["code"] == "email_taken"
+    assert client.post("/auth/login", json={"email": "a@test.com", "password": PASSWORD}).status_code == 200
+
+
+def test_verify_email_rejects_expired_token(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    client.post("/auth/signup", json={"email": "a@test.com", "nickname": "느림보", "password": PASSWORD, "tier": "beginner"})
+    token = pending_token("a@test.com")
+
+    freeze(kst_at(0, 2, 12) + EMAIL_VERIFICATION_TTL + dt.timedelta(seconds=1))
+    expired = client.post("/auth/verify-email", json={"token": token})
+    assert expired.status_code == 400 and expired.json()["code"] == "invalid_or_expired_token"
+
+    # once it's expired, resend can't revive it (it's swept away as stale) — signing up again can
+    resend = client.post("/auth/resend-verification", json={"email": "a@test.com"})
+    assert resend.status_code == 200
+    assert client.post("/auth/verify-email", json={"token": token}).status_code == 400
+
+    retry = client.post(
+        "/auth/signup", json={"email": "a@test.com", "nickname": "느림보", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert retry.status_code == 202
+    fresh = client.post("/auth/verify-email", json={"token": pending_token("a@test.com")})
+    assert fresh.status_code == 200
+
+
+def test_resend_verification_for_unknown_email_does_not_leak(client):
+    r = client.post("/auth/resend-verification", json={"email": "nobody@test.com"})
+    assert r.status_code == 200 and r.json()["email"] == "nobody@test.com"  # same shape either way
+
+
 # ------------------------------------------------------------------ camera photos
 def test_camera_photo_rules(client, freeze):
     freeze(kst_at(0, 2, 12))
@@ -239,8 +332,11 @@ def test_camera_photo_rules(client, freeze):
     assert reuse.status_code == 409 and reuse.json()["code"] == "photo_already_used"
 
     stale = camera_photo(client, a)
+    # a fresh angle photo, taken now so it exists before the sweep below runs — the front photo's
+    # own expiry is what this assertion is about, and _claim_photo checks the front photo first
+    stale_angle = camera_photo(client, a)
     freeze(kst_at(1, 1, 14))  # two hours later: too old to submit
-    expired = join(client, a, next_battle, photo_id=stale["photo_id"])
+    expired = join(client, a, next_battle, photo_id=stale["photo_id"], angle_photo_id=stale_angle["photo_id"])
     assert expired.status_code == 400 and expired.json()["code"] == "photo_expired"
 
     camera_photo(client, a)  # the next upload sweeps this user's expired, unused photos
@@ -332,6 +428,63 @@ def test_current_battle_and_joining(client, freeze):
     late, _ = signup(client, "c@test.com", tier="intermediate")
     closed = join(client, late, view["id"])
     assert closed.status_code == 400 and closed.json()["code"] == "battle_closed"
+
+
+# ------------------------------------------------------------------ battles: angle-photo verification
+def test_battle_requires_two_distinct_angle_photos(client, freeze):
+    """참가에는 정면 사진 + 대결이 무작위로 요구하는 구도 사진, 두 장이 필요해요 (온라인 사진 도용 방지)."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    view = current_battle(client, a)
+    assert view["required_angle"] in ANGLE_BY_ID
+    assert view["required_angle_label"] == ANGLE_BY_ID[view["required_angle"]]["label"]
+    assert view["required_angle_instruction"] == ANGLE_BY_ID[view["required_angle"]]["instruction"]
+
+    shot = camera_photo(client, a)
+    same_twice = join(client, a, view["id"], photo_id=shot["photo_id"], angle_photo_id=shot["photo_id"])
+    assert same_twice.status_code == 400 and same_twice.json()["code"] == "same_photo_twice"
+
+    missing_angle = join(client, a, view["id"], angle_photo_id=999)
+    assert missing_angle.status_code == 404 and missing_angle.json()["code"] == "photo_not_found"
+
+    joined = join(client, a, view["id"])
+    assert joined.status_code == 201
+    entry = joined.json()["entry"]
+    assert entry["angle_photo_url"].startswith("/uploads/") and entry["angle_photo_url"] != entry["photo_url"]
+    assert client.get(entry["angle_photo_url"]).status_code == 200
+
+
+def test_angle_photo_reuse_across_roles_is_rejected(client, freeze):
+    """한 사진이 한 출품작의 정면/구도 중 하나로 쓰였으면, 다른 출품작에서 반대 역할로도 재사용 못 해요."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    battle_id = current_battle(client, a)["id"]
+    front = camera_photo(client, a)
+    angle = camera_photo(client, a)
+    assert join(client, a, battle_id, photo_id=front["photo_id"], angle_photo_id=angle["photo_id"]).status_code == 201
+
+    freeze(kst_at(1, 1, 12))
+    next_battle = current_battle(client, a)["id"]
+    fresh = camera_photo(client, a)
+    reused = join(client, a, next_battle, photo_id=angle["photo_id"], angle_photo_id=fresh["photo_id"])
+    assert reused.status_code == 409 and reused.json()["code"] == "photo_already_used"
+
+
+def test_angle_mismatch_is_rejected_by_the_vision_check(client, freeze, monkeypatch):
+    """ANTHROPIC_API_KEY가 없는 테스트 환경에서는 기본적으로 통과되니(dev fallback), 판정 함수 자체를
+    몽키패치해서 실패/성공 양쪽 분기를 검증해요."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    battle_id = current_battle(client, a)["id"]
+
+    monkeypatch.setattr(vision, "check_angle_photos", lambda *a, **k: (False, "구도가 달라요. 다시 찍어주세요"))
+    mismatched = join(client, a, battle_id)
+    assert mismatched.status_code == 400 and mismatched.json()["code"] == "angle_mismatch"
+    assert mismatched.json()["detail"] == "구도가 달라요. 다시 찍어주세요"
+
+    monkeypatch.setattr(vision, "check_angle_photos", lambda *a, **k: (True, ""))
+    ok = join(client, a, battle_id)
+    assert ok.status_code == 201
 
 
 # ------------------------------------------------------------------ battles: voting

@@ -45,6 +45,11 @@ def write_image(data: bytes, ext: str) -> str:
     return filename
 
 
+def read_saved_image(filename: str) -> bytes:
+    with open(os.path.join(settings.upload_dir, filename), "rb") as f:
+        return f.read()
+
+
 def delete_image(filename: Optional[str]) -> None:
     if filename:
         with contextlib.suppress(OSError):

@@ -41,6 +41,10 @@ MAX_EXCHANGES_PER_MONTH_PER_USER = 2
 # "이번 달 요리 N회" x this = "절약한 식비". 4,000 is what the design mock implies (8회 -> 32,000원).
 SAVING_PER_COOKING_KRW = 4000
 
+# ---- email verification (signup isn't final until the link is clicked) ----
+# Resend attempts share services.throttle's login rate limit (10 per 10 minutes per key).
+EMAIL_VERIFICATION_TTL = dt.timedelta(minutes=30)
+
 # ---- in-app camera photos -------------------------------------------------
 # The photo is uploaded the moment it's taken; the server stamps captured_at. It must be attached
 # to a battle entry within this window, and can be used only once (so old photos can't be recycled).
@@ -50,6 +54,20 @@ MAX_UPLOADS_PER_HOUR = 30
 # (survives resizing/recompression/minor brightness changes). On top of camera-only + TTL + single
 # use, this catches someone re-photographing a screen/printout of an old photo. 0-64 scale.
 PHOTO_DUP_HAMMING_DISTANCE = 10
+
+# ---- angle-photo verification (proof the dish is really yours) ------------
+# On top of camera-only + TTL + reuse detection, every battle also requires a *second* photo shot
+# from an angle picked at random when the battle is created (services.battles). A photo lifted from
+# the internet can't be re-shot to order from an unpredictable angle, so this is the main defense
+# against submitting someone else's picture. services/vision.py checks (via a vision model) that
+# the two photos show the same dish and that the second one actually matches the requested angle.
+ANGLE_POOL = [
+    {"id": "top", "label": "위에서 내려다본 모습", "instruction": "음식을 바로 위에서 내려다보고 찍어주세요"},
+    {"id": "side", "label": "옆에서 찍은 모습", "instruction": "그릇을 옆에서 찍어주세요"},
+    {"id": "closeup", "label": "가까이서 찍은 클로즈업", "instruction": "음식에 최대한 가까이 다가가서 찍어주세요"},
+    {"id": "hand", "label": "손(도구)이 함께 나온 모습", "instruction": "젓가락이나 숟가락을 든 손과 함께 찍어주세요"},
+]
+ANGLE_BY_ID = {a["id"]: a for a in ANGLE_POOL}
 
 # ---- voting (after a battle's cooking period ends) -------------------------
 # 대회가 끝나면 바로 집계하지 않고, 24시간 동안 투표만 받은 뒤에 집계해요.
