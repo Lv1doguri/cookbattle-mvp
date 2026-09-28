@@ -1,0 +1,849 @@
+import datetime as dt
+
+from app.content import ENTRY_MIN_PHOTOS, REVIEW_DAILY_CAP_POINTS, STREAK_BONUS_POINTS
+from app.database import SessionLocal
+from app.enums import Tier
+from app.models import Exchange, LedgerEntry, User
+from app.services.battles import get_or_create_daily_battle, get_or_create_theme_battle, week_label
+from app.services.points import level_for
+from sqlalchemy import func, select
+
+from .conftest import PASSWORD, PNG, camera_photo, current_battle, group, join, kst_at, set_user, signup
+
+
+def _iso(s: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def run_battle(client, freeze, votes_for=(2, 2, 1, 0)):
+    """One battle in the 중급 group, cooked and voted on, left frozen 1 hour into its 24-hour
+    voting window. votes_for[i] = votes cook_i receives. cook0 submits first, cook1 second, ...
+    Voters are separate non-participants.
+
+    Callers should `freeze(kst_at(1, 1, 1))` afterwards (past the voting window) before checking
+    `/battles/{id}/result`.
+    Returns (cooks, voters, battle_id, entry_ids).
+    """
+    freeze(kst_at(0, 2, 12))
+    cooks = group(client, len(votes_for), prefix="cook")
+    voters = group(client, sum(votes_for), prefix="voter")
+    battle_id = current_battle(client, cooks[0][0])["id"]
+    entry_ids = []
+    for i, (headers, _) in enumerate(cooks):
+        freeze(kst_at(0, 2, 12) + dt.timedelta(minutes=i))
+        r = join(client, headers, battle_id, dish=f"요리{i}")
+        assert r.status_code == 201, r.text
+        entry_ids.append(r.json()["entry"]["id"])
+    freeze(kst_at(1, 0, 1))  # cooking ended (kst_at(1, 0, 0)); now 1h into the voting window
+    v = iter(voters)
+    for entry_id, n in zip(entry_ids, votes_for):
+        for _ in range(n):
+            assert client.post(f"/entries/{entry_id}/vote", headers=next(v)[0]).status_code == 200
+    return cooks, voters, battle_id, entry_ids
+
+
+# ------------------------------------------------------------------ auth
+def test_signup_login_and_me(client):
+    r = client.post(
+        "/auth/signup",
+        json={"username": "yuri1", "email": "Yuri@Test.com", "nickname": "Yuri", "password": PASSWORD, "tier": "intermediate"},
+    )
+    assert r.status_code == 201
+    me = r.json()["user"]
+    assert (me["username"], me["email"], me["nickname"], me["tier"], me["tier_label"]) == ("yuri1", "yuri@test.com", "Yuri", "intermediate", "중급")
+    assert me["progress"] == {
+        "level": 1, "points": 10, "total_points": 10, "level_start_points": 0, "next_level_points": 100, "points_to_next_level": 90,
+    }  # 가입 보너스 +10P
+    assert me["pending_tier"] is None and me["saved_recipe_count"] == 0 and me["review_count"] == 0
+
+    same_username = client.post(
+        "/auth/signup", json={"username": "YURI1", "email": "c@test.com", "nickname": "Nickname2", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert same_username.status_code == 409 and same_username.json()["code"] == "username_taken"
+    assert same_username.json()["detail"] == "이미 등록된 아이디입니다"
+    same_nick = client.post(
+        "/auth/signup", json={"username": "yuri2", "email": "b@test.com", "nickname": "YURI", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert same_nick.status_code == 409 and same_nick.json()["code"] == "nickname_taken"
+    assert same_nick.json()["detail"] == "이미 사용 중인 닉네임입니다"
+    same_email = client.post(
+        "/auth/signup", json={"username": "yuri3", "email": "YURI@test.com", "nickname": "Other", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert same_email.status_code == 409 and same_email.json()["code"] == "email_taken"
+
+    wrong = client.post("/auth/login", json={"email": "yuri@test.com", "password": "wrong-password"})
+    assert wrong.status_code == 401 and wrong.json()["code"] == "invalid_credentials"
+    unknown = client.post("/auth/login", json={"email": "nobody@test.com", "password": PASSWORD})
+    assert unknown.status_code == 401 and unknown.json()["detail"] == wrong.json()["detail"]
+
+    ok = client.post("/auth/login", json={"email": "YURI@test.com", "password": PASSWORD})
+    assert ok.status_code == 200
+    headers = {"Authorization": f"Bearer {ok.json()['access_token']}"}
+    assert client.get("/me", headers=headers).json()["id"] == me["id"]
+    assert client.get("/me").status_code == 401
+    assert client.get("/me", headers={"Authorization": "Bearer garbage"}).status_code == 401
+
+
+def test_nickname_availability_and_validation(client):
+    signup(client, "a@test.com", nickname="자취생")  # username defaults to "id_a"
+    assert client.get("/auth/nickname-available", params={"nickname": "자취생"}).json() == {"available": False}
+    assert client.get("/auth/nickname-available", params={"nickname": "새닉네임"}).json() == {"available": True}
+    assert client.get("/auth/nickname-available", params={"nickname": "a"}).status_code == 422
+
+    assert client.get("/auth/username-available", params={"username": "ID_A"}).json() == {"available": False}  # 대소문자 무시
+    assert client.get("/auth/username-available", params={"username": "새아이디"}).json() == {"available": True}
+    assert client.get("/auth/username-available", params={"username": "abc"}).status_code == 422  # 4자 미만
+
+    bad = client.post(
+        "/auth/signup", json={"username": "xuser", "email": "x@test.com", "nickname": "닉", "password": "short", "tier": "beginner"}
+    )
+    assert bad.status_code == 422 and isinstance(bad.json()["detail"], str) and bad.json()["code"] == "validation_error"
+    no_tier = client.post(
+        "/auth/signup", json={"username": "xuser", "email": "x@test.com", "nickname": "닉네임", "password": PASSWORD}
+    )
+    assert no_tier.status_code == 422
+    bad_tier = client.post(
+        "/auth/signup",
+        json={"username": "xuser", "email": "x@test.com", "nickname": "닉네임", "password": PASSWORD, "tier": "expert"},
+    )
+    assert bad_tier.status_code == 422
+    assert client.get("/nope").json()["detail"] == "Not Found"
+
+
+def test_level_thresholds():
+    assert [level_for(p) for p in (0, 99, 100, 299, 300, 699, 700, 1499, 1500)] == [1, 1, 2, 2, 3, 3, 4, 4, 5]
+
+
+def test_progress_matches_the_home_mockup(client):
+    _, me = signup(client, "a@test.com", tier="intermediate")
+    set_user(me["id"], points=150, total_points=150)
+    headers = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'a@test.com', 'password': PASSWORD}).json()['access_token']}"}
+    progress = client.get("/me", headers=headers).json()["progress"]
+    assert progress["level"] == 2 and progress["next_level_points"] == 300 and progress["points_to_next_level"] == 150  # "다음 레벨까지 150P → Lv.3"
+
+
+# ------------------------------------------------------------------ profile
+def test_profile_edit(client):
+    a, _ = signup(client, "a@test.com", nickname="Yuri", tier="beginner")
+    signup(client, "b@test.com", nickname="Minsu")
+
+    taken = client.patch("/me", json={"nickname": "MINSU"}, headers=a)
+    assert taken.status_code == 409 and taken.json()["code"] == "nickname_taken"
+    assert client.patch("/me", json={"nickname": "yuri"}, headers=a).status_code == 200  # own nickname, new case
+    dup_email = client.patch("/me", json={"email": "B@test.com"}, headers=a)
+    assert dup_email.status_code == 409 and dup_email.json()["code"] == "email_taken"
+
+    changed = client.patch("/me", json={"nickname": "새이름", "email": "new@test.com", "password": "newpass123"}, headers=a)
+    assert changed.status_code == 200 and changed.json()["nickname"] == "새이름" and changed.json()["email"] == "new@test.com"
+    assert client.post("/auth/login", json={"email": "new@test.com", "password": PASSWORD}).status_code == 401
+    assert client.post("/auth/login", json={"email": "new@test.com", "password": "newpass123"}).status_code == 200
+    assert client.patch("/me", json={"password": "short"}, headers=a).status_code == 422
+    assert client.patch("/me", json={}, headers=a).status_code == 200  # nothing sent, nothing changes
+
+
+def test_tier_change_applies_from_the_next_battle(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    a, me = signup(client, "a@test.com", tier="beginner")
+
+    pending = client.patch("/me", json={"tier": "intermediate"}, headers=a).json()
+    assert pending["tier"] == "beginner" and pending["pending_tier"] == "intermediate"
+    assert pending["pending_tier_label"] == "중급" and _iso(pending["pending_tier_applies_at"]) == kst_at(1, 0, 0)
+    assert current_battle(client, a)["tier"] == "beginner"  # this week's group is unchanged
+
+    same = client.patch("/me", json={"tier": "beginner"}, headers=a).json()
+    assert same["pending_tier"] is None  # changing back cancels the switch
+    client.patch("/me", json={"tier": "advanced"}, headers=a)
+
+    freeze(kst_at(1, 0, 1))
+    switched = client.get("/me", headers=a).json()
+    assert switched["tier"] == "advanced" and switched["pending_tier"] is None
+    assert current_battle(client, a)["tier"] == "advanced"
+
+
+def test_avatar_upload(client):
+    a, _ = signup(client, "a@test.com")
+    bad = client.put("/me/avatar", files={"file": ("x.png", b"not an image", "image/png")}, headers=a)
+    assert bad.status_code == 400 and bad.json()["code"] == "unsupported_image"
+    assert client.put("/me/avatar", files={"file": ("x.png", PNG, "image/png")}).status_code == 401
+
+    first = client.put("/me/avatar", files={"file": ("x.png", PNG, "image/png")}, headers=a).json()["avatar_url"]
+    assert first.startswith("/uploads/") and client.get(first).status_code == 200
+    second = client.put("/me/avatar", files={"file": ("y.png", PNG, "image/png")}, headers=a).json()["avatar_url"]
+    assert second != first and client.get(second).status_code == 200 and client.get(first).status_code == 404
+
+
+def test_signup_without_email_then_login_by_username(client):
+    """이메일은 선택이라 없어도 가입할 수 있고, 그 계정은 아이디(username)로 로그인해요."""
+    r = client.post("/auth/signup", json={"username": "jachwi", "nickname": "자취생", "password": PASSWORD, "tier": "beginner"})
+    assert r.status_code == 201 and r.json()["user"]["email"] is None and r.json()["user"]["username"] == "jachwi"
+    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    assert client.post(
+        "/auth/signup", json={"username": "another", "nickname": "또다른", "password": PASSWORD, "tier": "beginner"}
+    ).status_code == 201
+
+    assert client.post("/auth/login", json={"email": "jachwi", "password": PASSWORD}).status_code == 200
+    assert client.post("/auth/login", json={"email": "  jachwi ", "password": PASSWORD}).status_code == 200
+    assert client.post("/auth/login", json={"email": "jachwi", "password": "wrong-password"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "no-such-id", "password": PASSWORD}).status_code == 401
+
+    added = client.patch("/me", json={"email": "You@University.ac.kr"}, headers=headers).json()
+    assert added["email"] == "you@university.ac.kr"
+    assert client.post("/auth/login", json={"email": "YOU@university.ac.kr", "password": PASSWORD}).status_code == 200
+    dup_email = client.post(
+        "/auth/signup",
+        json={"username": "copy1", "email": "you@university.ac.kr", "nickname": "복사본", "password": PASSWORD, "tier": "beginner"},
+    )
+    assert dup_email.status_code == 409 and dup_email.json()["code"] == "email_taken"
+    dup_username = client.post(
+        "/auth/signup", json={"username": "JACHWI", "nickname": "다른닉", "password": PASSWORD, "tier": "beginner"}
+    )
+    assert dup_username.status_code == 409 and dup_username.json()["code"] == "username_taken"
+    bad_email = client.post(
+        "/auth/signup",
+        json={"username": "copy2", "email": "not-an-email", "nickname": "복사본", "password": PASSWORD, "tier": "beginner"},
+    )
+    assert bad_email.status_code == 422
+
+
+def test_login_is_throttled_after_repeated_failures(client, freeze):
+    signup(client, "a@test.com", nickname="Yuri", username="Yuri")
+    wrong = {"email": "yuri", "password": "wrong-password"}
+    for _ in range(10):
+        assert client.post("/auth/login", json=wrong).status_code == 401
+    blocked = client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD})  # even the right password
+    assert blocked.status_code == 429 and blocked.json()["code"] == "too_many_attempts"
+    assert client.post("/auth/login", json={"email": "someone-else", "password": PASSWORD}).status_code == 401  # not blocked
+
+    freeze(kst_at(0, 2, 12))  # the 10-minute window has long passed
+    assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
+
+
+def test_successful_login_clears_the_failure_count(client):
+    signup(client, "a@test.com", nickname="Yuri", username="Yuri")
+    for _ in range(9):
+        client.post("/auth/login", json={"email": "Yuri", "password": "wrong-password"})
+    assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
+    for _ in range(9):
+        assert client.post("/auth/login", json={"email": "Yuri", "password": "wrong-password"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
+
+
+# ------------------------------------------------------------------ camera photos
+def test_camera_photo_rules(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    b, _ = signup(client, "b@test.com", tier="intermediate")
+    assert client.post("/photos", files={"file": ("x.png", PNG, "image/png")}).status_code == 401
+    bad = client.post("/photos", files={"file": ("x.png", b"not an image", "image/png")}, headers=a)
+    assert bad.status_code == 400 and bad.json()["code"] == "unsupported_image"
+    too_big = client.post("/photos", files={"file": ("x.png", PNG + b"0" * (8 * 1024 * 1024), "image/png")}, headers=a)
+    assert too_big.status_code == 413 and too_big.json()["code"] == "file_too_large"
+
+    shot = camera_photo(client, a)
+    assert shot["photo_url"].startswith("/uploads/") and client.get(shot["photo_url"]).status_code == 200
+    assert _iso(shot["captured_at"]) == kst_at(0, 2, 12) and _iso(shot["expires_at"]) == kst_at(0, 2, 13)
+
+    battle_id = current_battle(client, a)["id"]
+    stolen = join(client, b, battle_id, photo_id=shot["photo_id"])  # someone else's photo
+    assert stolen.status_code == 404 and stolen.json()["code"] == "photo_not_found"
+    ok = join(client, a, battle_id, photo_id=shot["photo_id"])
+    assert ok.status_code == 201 and ok.json()["entry"]["photo_url"] == shot["photo_url"]
+
+    freeze(kst_at(1, 1, 12))  # next week's battle: the used photo can't be recycled
+    next_battle = current_battle(client, a)["id"]
+    reuse = join(client, a, next_battle, photo_id=shot["photo_id"])
+    assert reuse.status_code == 409 and reuse.json()["code"] == "photo_already_used"
+
+    stale = camera_photo(client, a)
+    fillers = [camera_photo(client, a)["photo_id"] for _ in range(ENTRY_MIN_PHOTOS - 1)]  # taken before it goes stale
+    freeze(kst_at(1, 1, 14))  # two hours later: too old to submit
+    expired = join(client, a, next_battle, photo_ids=[stale["photo_id"], *fillers])
+    assert expired.status_code == 400 and expired.json()["code"] == "photo_expired"
+
+    camera_photo(client, a)  # the next upload sweeps this user's expired, unused photos
+    assert client.get(stale["photo_url"]).status_code == 404
+    assert client.get(shot["photo_url"]).status_code == 200  # the one backing an entry stays
+
+
+def test_camera_upload_rate_limit(client):
+    a, _ = signup(client, "a@test.com")
+    for _ in range(30):
+        camera_photo(client, a)
+    limited = client.post("/photos", files={"file": ("x.png", PNG, "image/png")}, headers=a)
+    assert limited.status_code == 429 and limited.json()["code"] == "too_many_uploads"
+
+
+# ------------------------------------------------------------------ battles: setup
+def test_weekly_battle_schedule(client):
+    with SessionLocal() as db:
+        battle = get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
+        assert battle.theme == "계란 요리" and battle.description == "계란이 메인인 든든한 한 끼"
+        assert battle.starts_at == dt.datetime(2026, 9, 20, 15, 0, tzinfo=dt.timezone.utc)  # Mon 9/21 00:00 KST
+        assert battle.ends_at == dt.datetime(2026, 9, 27, 15, 0, tzinfo=dt.timezone.utc)  # Mon 9/28 00:00 KST
+        assert battle.voting_ends_at == dt.datetime(2026, 9, 28, 15, 0, tzinfo=dt.timezone.utc)  # + 24h
+        beginner = get_or_create_daily_battle(db, Tier.beginner, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
+        assert beginner.id != battle.id and beginner.description == "간단한 계란 요리면 OK"
+        assert get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 25, 3, 0, tzinfo=dt.timezone.utc)).id == battle.id
+    assert week_label(dt.date(2026, 9, 21)) == "9월 4주차"
+    assert week_label(dt.date(2026, 8, 31)) == "9월 1주차"  # its Thursday is Sep 3
+
+
+def test_theme_battle_is_shared_across_tiers(client):
+    with SessionLocal() as db:
+        now = dt.datetime(2026, 9, 1, 3, 0, tzinfo=dt.timezone.utc)  # Tue 9/1 12:00 KST
+        theme = get_or_create_theme_battle(db, now)
+        assert theme.tier is None and theme.kind.value == "theme"
+        # same 3-day cooking cycle regardless of who's asking, and it's the same row every time
+        assert get_or_create_theme_battle(db, now + dt.timedelta(hours=1)).id == theme.id
+        assert theme.voting_ends_at == theme.ends_at + dt.timedelta(hours=24)
+
+    a, _ = signup(client, "a@test.com", tier="beginner")
+    b, _ = signup(client, "b@test.com", tier="advanced")
+    theme_a = client.get("/battles/current", params={"kind": "theme"}, headers=a).json()
+    theme_b = client.get("/battles/current", params={"kind": "theme"}, headers=b).json()
+    assert theme_a["id"] == theme_b["id"] and theme_a["tier"] is None and theme_a["tier_label"] is None
+    assert theme_a["is_my_group"] and theme_b["is_my_group"]  # everyone's group, regardless of tier
+
+
+def test_entry_requires_multiple_angle_photos(client, freeze):
+    """대결 참가는 각도별 인증샷이 최소 ENTRY_MIN_PHOTOS장 필요해요. 조작 방지 목적."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    b, _ = signup(client, "b@test.com", tier="intermediate")
+    battle_id = current_battle(client, a)["id"]
+
+    too_few = [camera_photo(client, a)["photo_id"] for _ in range(ENTRY_MIN_PHOTOS - 1)]
+    short = client.post(
+        f"/battles/{battle_id}/entries",
+        json={"photo_ids": too_few, "dish_name": "요리"},
+        headers=a,
+    )
+    assert short.status_code == 422
+
+    dup = [too_few[0]] * ENTRY_MIN_PHOTOS
+    dup_resp = client.post(
+        f"/battles/{battle_id}/entries",
+        json={"photo_ids": dup, "dish_name": "요리"},
+        headers=a,
+    )
+    assert dup_resp.status_code == 400 and dup_resp.json()["code"] == "duplicate_photo"
+
+    others_photo = camera_photo(client, b)["photo_id"]
+    mixed_owner = client.post(
+        f"/battles/{battle_id}/entries",
+        json={"photo_ids": [*too_few, others_photo], "dish_name": "요리"},
+        headers=a,
+    )
+    assert mixed_owner.status_code == 404 and mixed_owner.json()["code"] == "photo_not_found"
+
+    ok = join(client, a, battle_id, dish="세 컷짜리 요리")
+    assert ok.status_code == 201
+    entry = ok.json()["entry"]
+    assert len(entry["photo_urls"]) == ENTRY_MIN_PHOTOS
+    assert entry["photo_url"] == entry["photo_urls"][0]
+    assert len({*entry["photo_urls"]}) == ENTRY_MIN_PHOTOS  # 서로 다른 사진들
+
+    fetched = client.get(f"/battles/{battle_id}/entries", headers=a).json()["items"][0]
+    assert fetched["photo_urls"] == entry["photo_urls"]
+
+
+def test_current_battle_and_joining(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    beginner, _ = signup(client, "a@test.com", tier="beginner")
+    inter, inter_user = signup(client, "b@test.com", tier="intermediate")
+    assert client.get("/battles/current").status_code == 401
+
+    view = current_battle(client, inter)
+    assert view["tier"] == "intermediate" and view["title"] == f"{view['theme']} 대결"
+    assert view["is_open"] and view["is_my_group"] and view["can_join"] and not view["has_joined"]
+    assert view["participants"] == 0 and view["my_entry"] is None and view["last_result"] is None
+    assert view["days_left"] == 5 and view["seconds_left"] == 4.5 * 86400 // 1  # Wed 12:00 -> Mon 00:00 KST
+    other_tab = current_battle(client, inter, tier="beginner")
+    assert other_tab["is_my_group"] is False and other_tab["can_join"] is False
+    assert current_battle(client, beginner)["tier"] == "beginner"  # default = my own group
+
+    wrong = join(client, beginner, view["id"])
+    assert wrong.status_code == 403 and wrong.json()["code"] == "wrong_group" and "초급" in wrong.json()["detail"]
+
+    no_photo = client.post(f"/battles/{view['id']}/entries", json={"dish_name": "요리"}, headers=inter)
+    assert no_photo.status_code == 422
+    unknown_photo = join(client, inter, view["id"], photo_id=999)
+    assert unknown_photo.status_code == 404 and unknown_photo.json()["code"] == "photo_not_found"
+    blank = join(client, inter, view["id"], dish="   ")
+    assert blank.status_code == 422
+    assert client.get("/me", headers=inter).json()["progress"]["points"] == 10  # none of the failures paid anything; only 가입 보너스
+
+    joined = join(client, inter, view["id"], dish="치즈 스크램블 에그", description="치즈는 마지막에!")
+    assert joined.status_code == 201
+    body = joined.json()
+    assert (body["points_awarded"], body["points"]) == (23, 33)  # 참가(8) + 생애 첫 참가 보너스(15)
+    assert body["entry"]["dish_name"] == "치즈 스크램블 에그" and body["entry"]["state"] == "mine"
+    assert body["entry"]["author"]["nickname"] == "u_b" and client.get(body["entry"]["photo_url"]).status_code == 200
+
+    again = join(client, inter, view["id"])
+    assert again.status_code == 409 and again.json()["code"] == "already_entered"
+    after = current_battle(client, inter)
+    assert after["can_join"] is False and after["has_joined"] and after["participants"] == 1
+    assert after["my_entry"]["id"] == body["entry"]["id"]
+    assert client.get("/me", headers=inter).json()["progress"]["points"] == 33
+
+    freeze(kst_at(1, 0, 1))  # the week is over
+    late, _ = signup(client, "c@test.com", tier="intermediate")
+    closed = join(client, late, view["id"])
+    assert closed.status_code == 400 and closed.json()["code"] == "battle_closed"
+
+
+def test_streak_bonus_every_three_consecutive_weeks(client, freeze):
+    """3주 연속으로 매주 요일별 대결에 참가하면 +20P가 더 붙어요. 한 주라도 거르면 streak가 끊겨요."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+
+    week0 = join(client, a, current_battle(client, a)["id"]).json()
+    assert week0["points_awarded"] == 23  # participation(8) + first_battle_bonus(15), no streak bonus yet
+
+    freeze(kst_at(1, 2, 12))
+    week1 = join(client, a, current_battle(client, a)["id"]).json()
+    assert week1["points_awarded"] == 8  # 2주차, streak 아직 3 미만
+
+    freeze(kst_at(2, 2, 12))
+    week2 = join(client, a, current_battle(client, a)["id"]).json()
+    assert week2["points_awarded"] == 8 + STREAK_BONUS_POINTS  # 3주 연속 -> 보너스
+
+    # 10(가입) + 23(1주차) + 8(2주차) + 28(3주차, 참가+streak) = 69
+    assert client.get("/me", headers=a).json()["progress"]["points"] == 69
+
+    freeze(kst_at(4, 2, 12))  # 4주차는 건너뛰고 5주차에 참가 -> streak 끊김
+    week4 = join(client, a, current_battle(client, a)["id"]).json()
+    assert week4["points_awarded"] == 8  # streak가 1로 리셋돼서 보너스 없음
+
+
+# ------------------------------------------------------------------ battles: voting
+def test_voting_only_opens_after_cooking_ends(client, freeze):
+    """투표는 대회 종료 후 24시간 동안만 가능해요. 요리 기간에는 아무도 투표할 수 없어요."""
+    freeze(kst_at(0, 2, 12))
+    (c0, _), (c1, _), (c2, _) = group(client, 3, prefix="cook")
+    voter, _ = signup(client, "voter@test.com", nickname="voter", tier="intermediate")
+    outsider, _ = signup(client, "out@test.com", nickname="outsider", tier="beginner")
+    battle_id = current_battle(client, c0)["id"]
+    entry_ids = [join(client, h, battle_id, dish=f"요리{i}").json()["entry"]["id"] for i, h in enumerate((c0, c1, c2))]
+
+    cooking = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
+    assert cooking["phase"] == "cooking" and not cooking["can_vote"] and not cooking["has_voted"]
+    assert [e["state"] for e in cooking["items"]] == ["unavailable"] * 3  # nobody can vote yet
+    too_early = client.post(f"/entries/{entry_ids[0]}/vote", headers=voter)
+    assert too_early.status_code == 400 and too_early.json()["code"] == "voting_not_started"
+
+    freeze(kst_at(1, 0, 1))  # cooking ended at kst_at(1, 0, 0); now 1h into the 24h voting window
+    listing = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
+    assert listing["phase"] == "voting" and listing["participants"] == 3 and listing["can_vote"]
+    assert [e["state"] for e in listing["items"]] == ["votable"] * 3
+    assert [e["dish_name"] for e in listing["items"]] == ["요리0", "요리1", "요리2"]  # submission order
+    mine = client.get(f"/battles/{battle_id}/entries", headers=c0).json()["items"]
+    assert [e["state"] for e in mine] == ["mine", "votable", "votable"]
+
+    own = client.post(f"/entries/{entry_ids[0]}/vote", headers=c0)
+    assert own.status_code == 400 and own.json()["code"] == "own_entry"
+    assert client.post(f"/entries/{entry_ids[0]}/vote", headers=outsider).json()["code"] == "wrong_group"
+    assert client.post("/entries/999/vote", headers=voter).status_code == 404
+
+    voted = client.post(f"/entries/{entry_ids[1]}/vote", headers=voter)
+    assert voted.status_code == 200
+    assert voted.json() == {"entry_id": entry_ids[1], "vote_count": 1, "has_voted": True, "points_awarded": 2}
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 12  # 가입(10) + 투표(+2P)
+    again = client.post(f"/entries/{entry_ids[2]}/vote", headers=voter)
+    assert again.status_code == 409 and again.json()["code"] == "already_voted"
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 12  # 두 번째는 안 줌
+    after = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
+    assert after["has_voted"] and after["my_vote_entry_id"] == entry_ids[1]
+    assert [e["state"] for e in after["items"]] == ["vote_done", "voted", "vote_done"]
+    assert [e["vote_count"] for e in after["items"]] == [0, 1, 0]
+
+    other_group = client.get(f"/battles/{battle_id}/entries", headers=outsider).json()
+    assert other_group["can_vote"] is False and {e["state"] for e in other_group["items"]} == {"unavailable"}
+
+    freeze(kst_at(1, 1, 1))  # voting window (24h from kst_at(1, 0, 0)) has closed
+    late, _ = signup(client, "late@test.com", nickname="late", tier="intermediate")
+    closed = client.post(f"/entries/{entry_ids[0]}/vote", headers=late)
+    assert closed.status_code == 400 and closed.json()["code"] == "voting_closed"
+
+
+# ------------------------------------------------------------------ battles: results
+def test_finalization_ranks_ties_and_pays_points(client, freeze):
+    cooks, voters, battle_id, entry_ids = run_battle(client, freeze, votes_for=(2, 2, 1, 0))
+    assert client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()["code"] == "battle_not_finished"
+
+    freeze(kst_at(1, 1, 1))  # past the 24h voting window
+    result = client.get(f"/battles/{battle_id}/result", headers=cooks[1][0]).json()
+    assert result["status"] == "ranked" and result["participants"] == 4 and result["tier_label"] == "중급"
+    assert [(r["rank"], r["user"]["nickname"], r["vote_count"]) for r in result["podium"]] == [
+        (1, "cook0", 2), (2, "cook1", 2), (3, "cook2", 1),
+    ]
+    assert [(r["rank"], r["tie"]) for r in result["top10"]] == [(1, "first"), (2, "tied"), (3, None), (4, None)]
+    assert [r["is_me"] for r in result["top10"]] == [False, True, False, False]
+    assert [r["is_winner"] for r in result["top10"]] == [True, False, False, False]  # tag on the 1등 row for everyone
+    assert [r["can_share_recipe"] for r in result["top10"]] == [False] * 4  # cook1 isn't the winner: no share button
+    winner_view = client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()
+    assert [r["can_share_recipe"] for r in winner_view["top10"]] == [True, False, False, False]  # only the winner's own row
+    assert result["top10"][0]["submitted_at"] < result["top10"][1]["submitted_at"]
+
+    # 2등 +25P(50P의 절반, 참가자 4명 < 10명): 가입(10)+참가(8)+첫대결보너스(15)=33 -> +25 = 58 (Lv.2 문턱인 100엔 아직 못 미침)
+    assert result["me"] == {
+        "joined": True, "rank": 2, "participation_points": 8, "rank_points": 25,
+        "level_from": 1, "level_to": 1, "leveled_up": False, "can_share_recipe": False, "shared_recipe_id": None,
+    }
+    balances = {}
+    for (headers, user), expected in zip(cooks, [(73, 1), (58, 1), (48, 1), (43, 1)]):
+        progress = client.get("/me", headers=headers).json()["progress"]
+        balances[user["nickname"]] = (progress["total_points"], progress["level"])
+        assert (progress["total_points"], progress["level"]) == expected
+        assert progress["points"] == progress["total_points"]
+
+    third = client.get(f"/battles/{battle_id}/result", headers=cooks[2][0]).json()["me"]
+    assert (third["rank"], third["rank_points"], third["leveled_up"]) == (3, 15, False)
+    last = client.get(f"/battles/{battle_id}/result", headers=cooks[3][0]).json()["me"]
+    assert (last["rank"], last["rank_points"], last["participation_points"]) == (4, 10, 8)  # 4등도 이제 보상 받아요 (20P의 절반)
+    bystander = client.get(f"/battles/{battle_id}/result", headers=voters[0][0]).json()["me"]
+    assert bystander["joined"] is False and bystander["rank"] is None and bystander["participation_points"] == 0
+
+    # asking again (or hitting other screens) never pays twice
+    client.get(f"/battles/{battle_id}/result", headers=cooks[0][0])
+    client.get("/me/home", headers=cooks[1][0])
+    assert client.get("/me", headers=cooks[1][0]).json()["progress"]["points"] == 58
+    with SessionLocal() as db:
+        assert db.scalar(select(func.sum(LedgerEntry.points_delta)).where(LedgerEntry.user_id == cooks[1][1]["id"])) == 58
+
+    # the next week's battle points back at this one
+    nxt = current_battle(client, cooks[1][0])
+    assert nxt["id"] != battle_id
+    assert nxt["last_result"] == {
+        "battle_id": battle_id, "title": result["title"], "week_label": result["week_label"],
+        "status": "ranked", "joined": True, "my_rank": 2,
+    }
+    assert current_battle(client, voters[0][0])["last_result"]["my_rank"] is None
+
+
+def test_rank_rewards_taper_but_never_hit_zero(client, freeze):
+    """3등 밑이라고 순위 보상이 0P가 되지 않아요 — 등수가 낮아질수록 줄어들되 바닥값(RANK_POINTS_FLOOR)까지만 내려가요."""
+    cooks, voters, battle_id, entry_ids = run_battle(client, freeze, votes_for=(6, 5, 4, 3, 2, 1))
+    freeze(kst_at(1, 1, 1))
+    result = client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()
+    ranks = [(r["rank"], r["rank_points"]) for r in result["top10"]]
+    assert ranks == [(1, 40), (2, 25), (3, 15), (4, 10), (5, 7), (6, 5)]  # 6명이라 <10 → 전부 반값
+    assert all(points > 0 for _, points in ranks)
+
+
+def test_void_battle_when_fewer_than_three_join(client, freeze):
+    cooks, voters, battle_id, _ = run_battle(client, freeze, votes_for=(1, 0))
+    freeze(kst_at(1, 1, 1))  # past the 24h voting window
+    result = client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()
+    assert result["status"] == "void" and result["participants"] == 2
+    assert result["podium"] == [] and result["top10"] == []
+    assert result["me"]["rank"] is None and result["me"]["rank_points"] == 0 and result["me"]["participation_points"] == 8
+    assert result["me"]["can_share_recipe"] is False
+    progress = client.get("/me", headers=cooks[0][0]).json()["progress"]
+    assert progress["points"] == 33  # signup(10) + participation(8) + first_battle_bonus(15); still theirs
+
+    home = client.get("/me/home", headers=cooks[0][0]).json()
+    assert [(h["status"], h["rank"]) for h in home["history"]] == [("void", None)]
+    assert current_battle(client, cooks[0][0])["last_result"]["status"] == "void"
+
+
+def test_home_stats_and_history(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    a, me = signup(client, "a@test.com", nickname="Yuri", tier="intermediate")
+    empty = client.get("/me/home", headers=a).json()
+    assert empty["history"] == [] and empty["reviews"] == [] and empty["cooking_count_this_month"] == 0
+    assert empty["saved_amount_krw"] == 0 and empty["me"]["nickname"] == "Yuri"
+
+    battle = current_battle(client, a)
+    join(client, a, battle["id"], dish="치즈 스크램블 에그")
+    client.post("/recipes/1/reviews", json={"text": "김치가 신 게 더 맛있어요"}, headers=a)
+    home = client.get("/me/home", headers=a).json()
+    assert home["cooking_count_this_month"] == 1 and home["saved_amount_krw"] == 4000
+    assert home["history"] == [{
+        "battle_id": battle["id"], "entry_id": home["history"][0]["entry_id"], "title": battle["title"],
+        "theme": battle["theme"], "week_label": battle["week_label"], "tier": "intermediate", "tier_label": "중급",
+        "status": "in_progress", "rank": None,
+    }]
+    assert [(r["recipe_name"], r["text"]) for r in home["reviews"]] == [("김치볶음밥", "김치가 신 게 더 맛있어요")]
+    assert home["review_total"] == 1 and home["me"]["review_count"] == 1
+    assert [r["recipe_id"] for r in client.get("/me/reviews", headers=a).json()] == [1]
+
+
+def test_notify_on_close_toggle(client, freeze):
+    """참가 완료 화면의 [대회 종료 시 알림 받기]. MVP라 저장만 하고 실제 알림은 안 나가요."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="beginner")
+    b, _ = signup(client, "b@test.com", tier="beginner")
+    battle_id = current_battle(client, a)["id"]
+    entry_id = join(client, a, battle_id).json()["entry"]["id"]
+    assert current_battle(client, a)["my_entry"]["notify_on_close"] is False
+
+    on = client.post(f"/entries/{entry_id}/notify", headers=a)
+    assert on.status_code == 200 and on.json() == {"notify_on_close": True}
+    assert current_battle(client, a)["my_entry"]["notify_on_close"] is True
+    off = client.post(f"/entries/{entry_id}/notify", headers=a)  # toggles back off
+    assert off.json() == {"notify_on_close": False}
+
+    assert client.post(f"/entries/{entry_id}/notify", headers=b).status_code == 403  # not their entry
+    assert client.post("/entries/999/notify", headers=a).status_code == 404
+
+
+def test_home_history_survives_a_theme_battle_entry(client, freeze):
+    """테마 대결은 tier가 없어서 홈 이력에 그대로 넣으면 죽기 쉬워요 — 안 죽는지 확인."""
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="beginner")
+    theme_id = client.get("/battles/current", params={"kind": "theme"}, headers=a).json()["id"]
+    join(client, a, theme_id)
+    home = client.get("/me/home", headers=a).json()
+    assert home["history"] == [{
+        "battle_id": theme_id, "entry_id": home["history"][0]["entry_id"], "title": home["history"][0]["title"],
+        "theme": home["history"][0]["theme"], "week_label": home["history"][0]["week_label"],
+        "tier": None, "tier_label": None, "status": "in_progress", "rank": None,
+    }]
+
+
+def test_battle_home_bundles_daily_theme_and_voting_card(client, freeze):
+    freeze(kst_at(0, 2, 12))
+    a, _ = signup(client, "a@test.com", tier="intermediate")
+    home = client.get("/battles/home", headers=a).json()
+    assert home["daily"]["kind"] == "daily" and home["daily"]["tier"] == "intermediate"
+    assert home["theme"]["kind"] == "theme" and home["theme"]["tier"] is None and home["theme"]["is_my_group"]
+    assert home["voting"] is None  # nothing to vote on yet
+    assert client.get("/battles/home").status_code == 401
+
+    cooks, _, battle_id, _ = run_battle(client, freeze, votes_for=(1, 1, 1))  # leaves time mid-voting-window
+    home2 = client.get("/battles/home", headers=cooks[0][0]).json()
+    assert home2["voting"] == {
+        "battle_id": battle_id, "kind": "daily", "title": home2["voting"]["title"],
+        "group_label": "중급", "participants": 3, "hours_left": home2["voting"]["hours_left"], "has_voted": False,
+    }
+    assert 1 <= home2["voting"]["hours_left"] <= 23
+
+
+# ------------------------------------------------------------------ google auth
+def test_google_auth_requires_configuration(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "google_client_id", "")  # dev .env may have a real one set
+    r = client.post("/auth/google", json={"id_token": "whatever"})
+    assert r.status_code == 500 and r.json()["code"] == "google_not_configured"
+
+
+def test_google_auth_rejects_bad_token(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "google_client_id", "fake-client-id.apps.googleusercontent.com")
+    r = client.post("/auth/google", json={"id_token": "not-a-real-jwt"})
+    assert r.status_code == 401 and r.json()["code"] == "invalid_google_token"
+
+
+# ------------------------------------------------------------------ recipes
+def test_seeded_recipes_and_filters(client):
+    a, _ = signup(client, "a@test.com")
+
+    def names(**params):
+        page = client.get("/recipes", params=params, headers=a).json()
+        return page["total"], sorted(r["name"] for r in page["items"])
+
+    assert names()[0] == 9
+    assert names(q="김치") == (1, ["김치볶음밥"])
+    assert names(q="참치") == (1, ["참치마요 덮밥"])  # ingredient search
+    assert names(q="밥 요리 대결")[0] == 1  # win label search
+    assert names(q="%") == (0, [])  # LIKE wildcards are escaped
+    assert names(category="rice")[0] == 3 and names(category=["rice", "dessert"])[0] == 3  # same group = OR
+    assert names(budget="under_5000")[0] == 6 and names(budget="5000_to_10000")[0] == 2
+    assert names(budget="over_10000") == (1, ["수제 라멘"])
+    assert names(budget=["under_5000", "over_10000"])[0] == 7
+    assert names(time="le_10")[0] == 2 and names(time="le_15")[0] == 6 and names(time="le_30")[0] == 8
+    assert names(time="ge_60") == (1, ["수제 라멘"])
+    assert names(difficulty="advanced") == (1, ["수제 라멘"]) and names(difficulty="beginner")[0] == 6
+    assert names(tool="microwave") == (0, []) and names(tool="pan")[0] == 6
+    assert names(budget="under_5000", difficulty="beginner")[0] == 5  # different groups = AND
+    assert names(category="healthy", budget="under_5000") == (0, [])
+
+    page = client.get("/recipes", params={"limit": 1}, headers=a).json()
+    assert page["total"] == 9 and len(page["items"]) == 1 and page["has_more"] is True
+    card = client.get("/recipes", params={"q": "크림"}, headers=a).json()["items"][0]
+    assert card == {
+        "id": card["id"], "name": "크림 파스타", "category": "pasta", "category_label": "파스타", "price": 4500,
+        "minutes": 20, "difficulty": "intermediate", "difficulty_label": "중급", "win_label": "면 요리 대결 1등",
+        "photo_url": card["photo_url"], "saves": 0, "is_saved": False, "is_essential": False,
+        "value_score": 4.5, "calories_kcal": 810, "portion_label": "1인분 푸짐하게",
+    }
+    assert card["photo_url"].startswith("/uploads/")  # seeded with a real sample photo
+    assert names(essential="true") == (3, ["김치볶음밥", "비빔국수", "참치마요 덮밥"])  # "자취 필수" chip
+    assert names(essential="true", time="le_10") == (1, ["참치마요 덮밥"])
+    assert names(essential="false")[0] == 9  # only `true` narrows the list
+    assert client.get("/recipes", params={"category": "sushi"}, headers=a).status_code == 422
+
+    saved_id = client.get("/recipes", params={"q": "비빔국수"}, headers=a).json()["items"][0]["id"]
+    client.post(f"/recipes/{saved_id}/save", headers=a)
+    popular = client.get("/recipes", params={"sort": "popular"}, headers=a).json()["items"]
+    assert popular[0]["id"] == saved_id and popular[0]["saves"] == 1 and popular[0]["is_saved"] is True
+
+
+def test_recipe_detail_save_recent_and_reviews(client):
+    a, _ = signup(client, "a@test.com", nickname="Yuri")
+    b, _ = signup(client, "b@test.com", nickname="Minsu")
+    kimchi = client.get("/recipes", params={"q": "김치볶음밥"}, headers=a).json()["items"][0]["id"]
+    pasta = client.get("/recipes", params={"q": "크림"}, headers=a).json()["items"][0]["id"]
+
+    detail = client.get(f"/recipes/{kimchi}", headers=a).json()
+    assert (detail["name"], detail["price"], detail["minutes"], detail["difficulty_label"]) == ("김치볶음밥", 3500, 15, "초급")
+    assert detail["author"]["nickname"] == "요리왕" and detail["win_label"] == "밥 요리 대결 1등"
+    assert [(i["name"], i["amount"]) for i in detail["ingredients"]][:2] == [("김치", "1컵"), ("밥", "1공기")]
+    assert [s["order"] for s in detail["steps"]] == [1, 2, 3] and detail["steps"][2]["text"] == "밥을 넣고 고루 볶는다."
+    assert [i["name"] for i in detail["ingredients"]] == ["김치", "밥", "계란", "식용유"] and detail["is_essential"] is True
+    assert detail["tools"] == [{"code": "pan", "label": "프라이팬 하나"}]
+    assert detail["is_saved"] is False and detail["saves"] == 0 and detail["comment_count"] == 0
+    assert client.get("/recipes/999", headers=a).status_code == 404
+
+    assert client.post(f"/recipes/{kimchi}/save", headers=a).json() == {"saved": True, "saves": 1}
+    assert client.post(f"/recipes/{kimchi}/save", headers=a).json()["saves"] == 1  # double tap is safe
+    assert client.post(f"/recipes/{kimchi}/save", headers=b).json()["saves"] == 2
+    client.post(f"/recipes/{pasta}/save", headers=a)
+    saved = client.get("/me/saved-recipes", headers=a).json()
+    assert saved["total"] == 2 and [r["id"] for r in saved["items"]] == [pasta, kimchi]  # newest save first
+    assert client.get(f"/recipes/{kimchi}", headers=a).json()["is_saved"] is True
+    assert client.get("/me", headers=a).json()["saved_recipe_count"] == 2
+    assert client.delete(f"/recipes/{kimchi}/save", headers=a).json() == {"saved": False, "saves": 1}
+    assert client.delete(f"/recipes/{kimchi}/save", headers=a).json()["saves"] == 1
+    assert [r["id"] for r in client.get("/me/saved-recipes", headers=a).json()["items"]] == [pasta]
+
+    client.get(f"/recipes/{pasta}", headers=b)
+    client.get(f"/recipes/{kimchi}", headers=b)
+    client.get(f"/recipes/{pasta}", headers=b)  # viewing again moves it back to the top
+    recent = client.get("/me/recent-recipes", headers=b).json()["items"]
+    assert [r["id"] for r in recent] == [pasta, kimchi]
+
+    for who, text in ((a, "계란 반숙이 핵심이네요!"), (b, "오늘 저녁 메뉴 정했어요"), (a, "김치가 신 게 더 맛있어요")):
+        created = client.post(f"/recipes/{kimchi}/reviews", json={"text": text}, headers=who)
+        assert created.status_code == 201 and created.json()["is_mine"] is True
+    listing = client.get(f"/recipes/{kimchi}/reviews", headers=b).json()
+    assert listing["total"] == 3 and [r["text"] for r in listing["items"]][0] == "계란 반숙이 핵심이네요!"
+    assert [r["author"]["nickname"] for r in listing["items"]] == ["Yuri", "Minsu", "Yuri"]
+    assert [r["is_mine"] for r in listing["items"]] == [False, True, False]
+    assert client.get(f"/recipes/{kimchi}", headers=b).json()["comment_count"] == 3
+    assert client.post(f"/recipes/{kimchi}/reviews", json={"text": "  "}, headers=a).status_code == 422
+    assert client.post("/recipes/999/reviews", json={"text": "x"}, headers=a).status_code == 404
+    assert client.get("/me", headers=a).json()["review_count"] == 2
+
+
+def test_review_with_photo_rating_and_difficulty(client):
+    a, _ = signup(client, "a@test.com")
+    b, _ = signup(client, "b@test.com")
+    kimchi = client.get("/recipes", params={"q": "김치볶음밥"}, headers=a).json()["items"][0]["id"]
+
+    photo_id = client.post("/photos", files={"file": ("x.png", PNG, "image/png")}, headers=a).json()["photo_id"]
+    created = client.post(
+        f"/recipes/{kimchi}/reviews",
+        json={"text": "인증 완료!", "photo_id": photo_id, "rating": 5, "difficulty_tag": "easy"},
+        headers=a,
+    ).json()
+    assert created["rating"] == 5 and created["difficulty_tag"] == "easy" and created["difficulty_tag_label"] == "쉬움 (원팬)"
+    assert created["photo_url"] and client.get(created["photo_url"]).status_code == 200
+
+    # 사진 없이/평가 없이도 그대로 동작해요 (전부 선택 항목)
+    plain = client.post(f"/recipes/{kimchi}/reviews", json={"text": "그냥 후기"}, headers=a).json()
+    assert plain["photo_url"] is None and plain["rating"] is None and plain["difficulty_tag_label"] is None
+
+    # 다른 사람의 사진 id는 못 씀
+    other_photo_id = client.post("/photos", files={"file": ("y.png", PNG, "image/png")}, headers=b).json()["photo_id"]
+    stolen = client.post(f"/recipes/{kimchi}/reviews", json={"text": "몰래", "photo_id": other_photo_id}, headers=a)
+    assert stolen.status_code == 404 and stolen.json()["code"] == "photo_not_found"
+
+    listing = client.get(f"/recipes/{kimchi}/reviews", headers=a).json()["items"]
+    assert listing[0]["rating"] == 5 and listing[1]["rating"] is None
+
+
+def test_review_points_capped_per_day(client):
+    """후기 1건당 +1P, 하루 최대 REVIEW_DAILY_CAP_POINTS(3P)까지만 지급돼요."""
+    a, _ = signup(client, "a@test.com")
+    kimchi = client.get("/recipes", params={"q": "김치볶음밥"}, headers=a).json()["items"][0]["id"]
+
+    points_before = client.get("/me", headers=a).json()["progress"]["points"]  # 30 (가입 보너스)
+    for i in range(REVIEW_DAILY_CAP_POINTS + 2):  # 5개 후기, 처음 3개만 포인트를 받아요
+        client.post(f"/recipes/{kimchi}/reviews", json={"text": f"후기 {i}"}, headers=a)
+    after = client.get("/me", headers=a).json()["progress"]["points"]
+    assert after - points_before == REVIEW_DAILY_CAP_POINTS
+
+
+def test_winner_shares_recipe(client, freeze):
+    cooks, voters, battle_id, entry_ids = run_battle(client, freeze, votes_for=(2, 1, 1))
+    winner, runner_up = cooks[0][0], cooks[1][0]
+    body = {
+        "category": "noodle", "price": 4000, "minutes": 20, "difficulty": "intermediate", "tools": ["pan", "pan"],
+        "ingredients": [{"name": "계란", "amount": "2개"}, {"name": "치즈"}], "steps": [{"text": "계란을 푼다"}, {"text": "익힌다"}],
+    }
+
+    early = client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=winner)
+    assert early.status_code == 403 and early.json()["code"] == "not_winner"  # not finalized yet (still voting)
+
+    freeze(kst_at(1, 1, 1))  # past the 24h voting window
+    result = client.get(f"/battles/{battle_id}/result", headers=winner).json()
+    assert result["me"]["can_share_recipe"] is True
+    assert client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=runner_up).json()["code"] == "not_your_entry"
+    assert client.post(f"/entries/{entry_ids[1]}/recipe", json=body, headers=runner_up).json()["code"] == "not_winner"
+    assert client.post("/entries/999/recipe", json=body, headers=winner).status_code == 404
+    assert client.post(f"/entries/{entry_ids[0]}/recipe", json={**body, "steps": []}, headers=winner).status_code == 422
+
+    shared = client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=winner)
+    assert shared.status_code == 201
+    recipe = shared.json()
+    assert recipe["name"] == "요리0" and recipe["win_label"] == f"{result['theme']} 대결 1등"
+    assert recipe["author"]["nickname"] == "cook0" and recipe["tools"] == [{"code": "pan", "label": "프라이팬 하나"}]
+    assert [(i["name"], i["amount"]) for i in recipe["ingredients"]] == [("계란", "2개"), ("치즈", None)]
+    assert recipe["photo_url"] and client.get(recipe["photo_url"]).status_code == 200
+
+    again = client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=winner)
+    assert again.status_code == 409 and again.json()["code"] == "already_shared"
+    me = client.get(f"/battles/{battle_id}/result", headers=winner).json()["me"]
+    assert me["can_share_recipe"] is False and me["shared_recipe_id"] == recipe["id"]
+    assert client.get("/recipes", params={"q": "요리0"}, headers=winner).json()["total"] == 1
+    assert client.get("/recipes", headers=winner).json()["total"] == 10  # 9 seeded + this shared one
+
+    mine = client.get("/recipes", params={"mine": "true"}, headers=winner).json()
+    assert mine["total"] == 1 and mine["items"][0]["name"] == "요리0"  # 마이페이지 '출품 레시피' 탭
+    assert client.get("/recipes", params={"mine": "true"}, headers=runner_up).json()["total"] == 0
+
+
+# ------------------------------------------------------------------ shop
+def test_shop_states_and_exchange(client):
+    a, me = signup(client, "a@test.com")
+    fresh = client.get("/shop", headers=a).json()
+    assert fresh["points"] == 10 and fresh["level"] == 1  # 가입 보너스 +10P
+    assert [(i["name"], i["price_points"], i["required_level"], i["state"], i["points_short"]) for i in fresh["items"]] == [
+        ("편의점 1,000원권", 150, 1, "insufficient_points", 140),  # the design's order, not price order
+        ("저가 커피 아메리카노", 300, 2, "locked", 0),
+        ("학식 식권", 800, 3, "locked", 0),
+        ("치킨 기프티콘", 3000, 5, "locked", 0),
+    ]
+    snack = next(i["id"] for i in fresh["items"] if i["name"] == "편의점 1,000원권")
+    broke = client.post(f"/shop/items/{snack}/exchange", headers=a)
+    assert broke.status_code == 400 and broke.json()["code"] == "insufficient_points"
+
+    set_user(me["id"], points=3000, total_points=3000)  # Lv.5, 모든 상품 구매 가능
+    rich = client.get("/shop", headers=a).json()
+    states = {i["name"]: (i["state"], i["points_short"]) for i in rich["items"]}
+    assert states["편의점 1,000원권"] == ("available", 0) and states["치킨 기프티콘"] == ("available", 0)
+
+    chicken = next(i["id"] for i in rich["items"] if i["name"] == "치킨 기프티콘")
+    done = client.post(f"/shop/items/{chicken}/exchange", headers=a)
+    assert done.status_code == 201 and done.json() == {"item_name": "치킨 기프티콘", "points_spent": 3000, "points": 0}
+    progress = client.get("/me", headers=a).json()["progress"]
+    assert (progress["points"], progress["total_points"]) == (0, 3000)  # spending never lowers the level
+    assert client.post(f"/shop/items/{chicken}/exchange", headers=a).json()["code"] == "insufficient_points"
+    assert client.post("/shop/items/999/exchange", headers=a).status_code == 404
+    with SessionLocal() as db:
+        assert [(e.name, e.points_spent) for e in db.scalars(select(Exchange).where(Exchange.user_id == me["id"]))] == [("치킨 기프티콘", 3000)]
+        # 원장에는 가입 보너스(+10, set_user는 원장을 안 거침)와 이번 교환(-3000)만 있어요.
+        assert db.scalar(select(func.sum(LedgerEntry.points_delta)).where(LedgerEntry.user_id == me["id"])) == 10 - 3000
+        assert db.get(User, me["id"]).points == 0
+
+
+def test_locked_item_cannot_be_exchanged(client):
+    a, me = signup(client, "a@test.com")
+    set_user(me["id"], points=650, total_points=650)  # Lv.3
+    chicken = next(i["id"] for i in client.get("/shop", headers=a).json()["items"] if i["name"] == "치킨 기프티콘")
+    locked = client.post(f"/shop/items/{chicken}/exchange", headers=a)
+    assert locked.status_code == 403 and locked.json()["code"] == "level_locked" and "Lv.5" in locked.json()["detail"]
+    assert client.get("/me", headers=a).json()["progress"]["points"] == 650
