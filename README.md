@@ -21,11 +21,20 @@ cookbattle/
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m app.seed          # 오늘 날짜 주제 4개 시드 (최초 1회, 이미 있으면 건너뜀)
 uvicorn app.main:app --reload --port 8000
 ```
+- 상점/기본 레시피 시드는 서버가 처음 뜰 때 자동으로 들어갑니다(비어있을 때만, 매번 다시 실행해도 안전).
 - API 문서(Swagger): http://localhost:8000/docs — 프론트팀이 실제 요청/응답을 직접 눌러볼 수 있습니다.
 - DB는 SQLite 파일(`backend/cookbattle.db`)이라 별도 서버 설치가 필요 없습니다.
+
+**발표/데모용 계정이 필요하면** (서버를 한 번 띄운 뒤, 새 터미널에서):
+```bash
+cd backend && source .venv/bin/activate
+python -m app.seed_demo
+```
+지난 5주간 대결 이력 + 순위 포인트, 공유한 레시피, 후기, 연속 참가 스트릭까지 채워진
+`inha1234` / `induck1234` 계정이 생깁니다(이미 있으면 건너뜀). 이번 주 라면 대결은 일부러
+참가 전 상태로 남겨둬서, 발표 중 실제로 참가하는 플로우를 보여줄 수 있어요.
 
 ### 프론트엔드
 ```bash
