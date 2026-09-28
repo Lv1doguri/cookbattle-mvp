@@ -1,14 +1,23 @@
 import datetime as dt
 
-from app.content import ENTRY_MIN_PHOTOS, REVIEW_DAILY_CAP_POINTS, STREAK_BONUS_POINTS
+from app.content import (
+    ENTRY_MIN_PHOTOS,
+    FIRST_BATTLE_BONUS_POINTS,
+    PARTICIPATION_POINTS,
+    PER_USER_MONTHLY_EXCHANGES,
+    REVIEW_DAILY_CAP_POINTS,
+    SIGNUP_BONUS_POINTS,
+    STREAK_BONUS_POINTS,
+    STREAK_DAYS,
+)
 from app.database import SessionLocal
 from app.enums import Tier
-from app.models import Exchange, LedgerEntry, User
+from app.models import Exchange, LedgerEntry, ShopItem, User
 from app.services.battles import get_or_create_daily_battle, get_or_create_theme_battle, week_label
 from app.services.points import level_for
 from sqlalchemy import func, select
 
-from .conftest import PASSWORD, PNG, camera_photo, current_battle, group, join, kst_at, set_user, signup
+from .conftest import PASSWORD, PNG, camera_photo, current_battle, day_at, group, join, kst_at, set_user, signup
 
 
 def _iso(s: str) -> dt.datetime:
@@ -20,21 +29,21 @@ def run_battle(client, freeze, votes_for=(2, 2, 1, 0)):
     voting window. votes_for[i] = votes cook_i receives. cook0 submits first, cook1 second, ...
     Voters are separate non-participants.
 
-    Callers should `freeze(kst_at(1, 1, 1))` afterwards (past the voting window) before checking
+    Callers should `freeze(day_at(1, 1))` afterwards (past the voting window) before checking
     `/battles/{id}/result`.
     Returns (cooks, voters, battle_id, entry_ids).
     """
-    freeze(kst_at(0, 2, 12))
+    freeze(day_at(0, 12))
     cooks = group(client, len(votes_for), prefix="cook")
     voters = group(client, sum(votes_for), prefix="voter")
     battle_id = current_battle(client, cooks[0][0])["id"]
     entry_ids = []
     for i, (headers, _) in enumerate(cooks):
-        freeze(kst_at(0, 2, 12) + dt.timedelta(minutes=i))
+        freeze(day_at(0, 12) + dt.timedelta(minutes=i))
         r = join(client, headers, battle_id, dish=f"요리{i}")
         assert r.status_code == 201, r.text
         entry_ids.append(r.json()["entry"]["id"])
-    freeze(kst_at(1, 0, 1))  # cooking ended (kst_at(1, 0, 0)); now 1h into the voting window
+    freeze(day_at(1, 1))  # cooking ended (day_at(1, 0)); now 1h into the voting window
     v = iter(voters)
     for entry_id, n in zip(entry_ids, votes_for):
         for _ in range(n):
@@ -147,14 +156,14 @@ def test_tier_change_applies_from_the_next_battle(client, freeze):
 
     pending = client.patch("/me", json={"tier": "intermediate"}, headers=a).json()
     assert pending["tier"] == "beginner" and pending["pending_tier"] == "intermediate"
-    assert pending["pending_tier_label"] == "중급" and _iso(pending["pending_tier_applies_at"]) == kst_at(1, 0, 0)
+    assert pending["pending_tier_label"] == "중급" and _iso(pending["pending_tier_applies_at"]) == kst_at(0, 3, 0)
     assert current_battle(client, a)["tier"] == "beginner"  # this week's group is unchanged
 
     same = client.patch("/me", json={"tier": "beginner"}, headers=a).json()
     assert same["pending_tier"] is None  # changing back cancels the switch
     client.patch("/me", json={"tier": "advanced"}, headers=a)
 
-    freeze(kst_at(1, 0, 1))
+    freeze(kst_at(0, 3, 1))
     switched = client.get("/me", headers=a).json()
     assert switched["tier"] == "advanced" and switched["pending_tier"] is None
     assert current_battle(client, a)["tier"] == "advanced"
@@ -274,16 +283,21 @@ def test_camera_upload_rate_limit(client):
 
 
 # ------------------------------------------------------------------ battles: setup
-def test_weekly_battle_schedule(client):
+def test_daily_battle_schedule(client):
     with SessionLocal() as db:
+        # 2026-09-23 03:00 UTC = 2026-09-23 12:00 KST (Wed). BATTLE_EPOCH 2026-08-31부터 23일째 ->
+        # 23 % 8 == 7 -> BATTLE_THEMES[7] "디저트".
         battle = get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
-        assert battle.theme == "계란 요리" and battle.description == "계란이 메인인 든든한 한 끼"
-        assert battle.starts_at == dt.datetime(2026, 9, 20, 15, 0, tzinfo=dt.timezone.utc)  # Mon 9/21 00:00 KST
-        assert battle.ends_at == dt.datetime(2026, 9, 27, 15, 0, tzinfo=dt.timezone.utc)  # Mon 9/28 00:00 KST
-        assert battle.voting_ends_at == dt.datetime(2026, 9, 28, 15, 0, tzinfo=dt.timezone.utc)  # + 24h
+        assert battle.theme == "디저트" and battle.description == "크림·시럽까지 직접 만든 디저트"
+        assert battle.starts_at == dt.datetime(2026, 9, 22, 15, 0, tzinfo=dt.timezone.utc)  # Wed 9/23 00:00 KST
+        assert battle.ends_at == dt.datetime(2026, 9, 23, 15, 0, tzinfo=dt.timezone.utc)  # Thu 9/24 00:00 KST
+        assert battle.voting_ends_at == dt.datetime(2026, 9, 24, 15, 0, tzinfo=dt.timezone.utc)  # + 24h
         beginner = get_or_create_daily_battle(db, Tier.beginner, dt.datetime(2026, 9, 23, 3, 0, tzinfo=dt.timezone.utc))
-        assert beginner.id != battle.id and beginner.description == "간단한 계란 요리면 OK"
-        assert get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 25, 3, 0, tzinfo=dt.timezone.utc)).id == battle.id
+        assert beginner.id != battle.id and beginner.description == "간단한 디저트면 OK"
+        # same KST day, later hour -> same row (not a new battle)
+        assert get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 23, 10, 0, tzinfo=dt.timezone.utc)).id == battle.id
+        # next KST day -> a different battle
+        assert get_or_create_daily_battle(db, Tier.intermediate, dt.datetime(2026, 9, 24, 3, 0, tzinfo=dt.timezone.utc)).id != battle.id
     assert week_label(dt.date(2026, 9, 21)) == "9월 4주차"
     assert week_label(dt.date(2026, 8, 31)) == "9월 1주차"  # its Thursday is Sep 3
 
@@ -357,7 +371,7 @@ def test_current_battle_and_joining(client, freeze):
     assert view["tier"] == "intermediate" and view["title"] == f"{view['theme']} 대결"
     assert view["is_open"] and view["is_my_group"] and view["can_join"] and not view["has_joined"]
     assert view["participants"] == 0 and view["my_entry"] is None and view["last_result"] is None
-    assert view["days_left"] == 5 and view["seconds_left"] == 4.5 * 86400 // 1  # Wed 12:00 -> Mon 00:00 KST
+    assert view["days_left"] == 1 and view["seconds_left"] == 12 * 3600  # Wed 12:00 -> Thu 00:00 KST
     other_tab = current_battle(client, inter, tier="beginner")
     assert other_tab["is_my_group"] is False and other_tab["can_join"] is False
     assert current_battle(client, beginner)["tier"] == "beginner"  # default = my own group
@@ -376,7 +390,7 @@ def test_current_battle_and_joining(client, freeze):
     joined = join(client, inter, view["id"], dish="치즈 스크램블 에그", description="치즈는 마지막에!")
     assert joined.status_code == 201
     body = joined.json()
-    assert (body["points_awarded"], body["points"]) == (23, 33)  # 참가(8) + 생애 첫 참가 보너스(15)
+    assert (body["points_awarded"], body["points"]) == (18, 28)  # 참가(3) + 생애 첫 참가 보너스(15)
     assert body["entry"]["dish_name"] == "치즈 스크램블 에그" and body["entry"]["state"] == "mine"
     assert body["entry"]["author"]["nickname"] == "u_b" and client.get(body["entry"]["photo_url"]).status_code == 200
 
@@ -385,36 +399,41 @@ def test_current_battle_and_joining(client, freeze):
     after = current_battle(client, inter)
     assert after["can_join"] is False and after["has_joined"] and after["participants"] == 1
     assert after["my_entry"]["id"] == body["entry"]["id"]
-    assert client.get("/me", headers=inter).json()["progress"]["points"] == 33
+    assert client.get("/me", headers=inter).json()["progress"]["points"] == 28
 
-    freeze(kst_at(1, 0, 1))  # the week is over
+    freeze(kst_at(0, 3, 1))  # the day is over
     late, _ = signup(client, "c@test.com", tier="intermediate")
     closed = join(client, late, view["id"])
     assert closed.status_code == 400 and closed.json()["code"] == "battle_closed"
 
 
-def test_streak_bonus_every_three_consecutive_weeks(client, freeze):
-    """3주 연속으로 매주 요일별 대결에 참가하면 +20P가 더 붙어요. 한 주라도 거르면 streak가 끊겨요."""
-    freeze(kst_at(0, 2, 12))
+def test_streak_bonus_every_n_consecutive_days(client, freeze):
+    """STREAK_DAYS일 연속으로 매일 요일별 대결에 참가하면 STREAK_BONUS_POINTS가 더 붙어요.
+    하루라도 거르면 streak가 끊겨요."""
+    freeze(day_at(0, 12))
     a, _ = signup(client, "a@test.com", tier="intermediate")
 
-    week0 = join(client, a, current_battle(client, a)["id"]).json()
-    assert week0["points_awarded"] == 23  # participation(8) + first_battle_bonus(15), no streak bonus yet
+    day0 = join(client, a, current_battle(client, a)["id"]).json()
+    assert day0["points_awarded"] == PARTICIPATION_POINTS + FIRST_BATTLE_BONUS_POINTS  # 첫 참가, streak 보너스는 아직
 
-    freeze(kst_at(1, 2, 12))
-    week1 = join(client, a, current_battle(client, a)["id"]).json()
-    assert week1["points_awarded"] == 8  # 2주차, streak 아직 3 미만
+    for d in range(1, STREAK_DAYS - 1):  # 2번째 ~ (STREAK_DAYS-1)번째 연속 참가: streak 아직 문턱 미만
+        freeze(day_at(d, 12))
+        r = join(client, a, current_battle(client, a)["id"]).json()
+        assert r["points_awarded"] == PARTICIPATION_POINTS
 
-    freeze(kst_at(2, 2, 12))
-    week2 = join(client, a, current_battle(client, a)["id"]).json()
-    assert week2["points_awarded"] == 8 + STREAK_BONUS_POINTS  # 3주 연속 -> 보너스
+    freeze(day_at(STREAK_DAYS - 1, 12))  # STREAK_DAYS번째 연속 참가 -> 보너스
+    last = join(client, a, current_battle(client, a)["id"]).json()
+    assert last["points_awarded"] == PARTICIPATION_POINTS + STREAK_BONUS_POINTS
 
-    # 10(가입) + 23(1주차) + 8(2주차) + 28(3주차, 참가+streak) = 69
-    assert client.get("/me", headers=a).json()["progress"]["points"] == 69
+    expected = (
+        SIGNUP_BONUS_POINTS + (PARTICIPATION_POINTS + FIRST_BATTLE_BONUS_POINTS)
+        + PARTICIPATION_POINTS * (STREAK_DAYS - 2) + (PARTICIPATION_POINTS + STREAK_BONUS_POINTS)
+    )
+    assert client.get("/me", headers=a).json()["progress"]["points"] == expected
 
-    freeze(kst_at(4, 2, 12))  # 4주차는 건너뛰고 5주차에 참가 -> streak 끊김
-    week4 = join(client, a, current_battle(client, a)["id"]).json()
-    assert week4["points_awarded"] == 8  # streak가 1로 리셋돼서 보너스 없음
+    freeze(day_at(STREAK_DAYS + 1, 12))  # 하루 건너뛰고 참가 -> streak 끊김
+    skipped = join(client, a, current_battle(client, a)["id"]).json()
+    assert skipped["points_awarded"] == PARTICIPATION_POINTS  # streak가 1로 리셋돼서 보너스 없음
 
 
 # ------------------------------------------------------------------ battles: voting
@@ -433,7 +452,7 @@ def test_voting_only_opens_after_cooking_ends(client, freeze):
     too_early = client.post(f"/entries/{entry_ids[0]}/vote", headers=voter)
     assert too_early.status_code == 400 and too_early.json()["code"] == "voting_not_started"
 
-    freeze(kst_at(1, 0, 1))  # cooking ended at kst_at(1, 0, 0); now 1h into the 24h voting window
+    freeze(kst_at(0, 3, 1))  # cooking ended at kst_at(0, 3, 0); now 1h into the 24h voting window
     listing = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
     assert listing["phase"] == "voting" and listing["participants"] == 3 and listing["can_vote"]
     assert [e["state"] for e in listing["items"]] == ["votable"] * 3
@@ -448,11 +467,11 @@ def test_voting_only_opens_after_cooking_ends(client, freeze):
 
     voted = client.post(f"/entries/{entry_ids[1]}/vote", headers=voter)
     assert voted.status_code == 200
-    assert voted.json() == {"entry_id": entry_ids[1], "vote_count": 1, "has_voted": True, "points_awarded": 2}
-    assert client.get("/me", headers=voter).json()["progress"]["points"] == 12  # 가입(10) + 투표(+2P)
+    assert voted.json() == {"entry_id": entry_ids[1], "vote_count": 1, "has_voted": True, "points_awarded": 1}
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 11  # 가입(10) + 투표(+1P)
     again = client.post(f"/entries/{entry_ids[2]}/vote", headers=voter)
     assert again.status_code == 409 and again.json()["code"] == "already_voted"
-    assert client.get("/me", headers=voter).json()["progress"]["points"] == 12  # 두 번째는 안 줌
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 11  # 두 번째는 안 줌
     after = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
     assert after["has_voted"] and after["my_vote_entry_id"] == entry_ids[1]
     assert [e["state"] for e in after["items"]] == ["vote_done", "voted", "vote_done"]
@@ -461,7 +480,7 @@ def test_voting_only_opens_after_cooking_ends(client, freeze):
     other_group = client.get(f"/battles/{battle_id}/entries", headers=outsider).json()
     assert other_group["can_vote"] is False and {e["state"] for e in other_group["items"]} == {"unavailable"}
 
-    freeze(kst_at(1, 1, 1))  # voting window (24h from kst_at(1, 0, 0)) has closed
+    freeze(kst_at(0, 4, 1))  # voting window (24h from kst_at(0, 3, 0)) has closed
     late, _ = signup(client, "late@test.com", nickname="late", tier="intermediate")
     closed = client.post(f"/entries/{entry_ids[0]}/vote", headers=late)
     assert closed.status_code == 400 and closed.json()["code"] == "voting_closed"
@@ -472,7 +491,7 @@ def test_finalization_ranks_ties_and_pays_points(client, freeze):
     cooks, voters, battle_id, entry_ids = run_battle(client, freeze, votes_for=(2, 2, 1, 0))
     assert client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()["code"] == "battle_not_finished"
 
-    freeze(kst_at(1, 1, 1))  # past the 24h voting window
+    freeze(day_at(2, 1))  # past the 24h voting window
     result = client.get(f"/battles/{battle_id}/result", headers=cooks[1][0]).json()
     assert result["status"] == "ranked" and result["participants"] == 4 and result["tier_label"] == "중급"
     assert [(r["rank"], r["user"]["nickname"], r["vote_count"]) for r in result["podium"]] == [
@@ -486,33 +505,33 @@ def test_finalization_ranks_ties_and_pays_points(client, freeze):
     assert [r["can_share_recipe"] for r in winner_view["top10"]] == [True, False, False, False]  # only the winner's own row
     assert result["top10"][0]["submitted_at"] < result["top10"][1]["submitted_at"]
 
-    # 2등 +25P(50P의 절반, 참가자 4명 < 10명): 가입(10)+참가(8)+첫대결보너스(15)=33 -> +25 = 58 (Lv.2 문턱인 100엔 아직 못 미침)
+    # 2등 +10P(20P의 절반, 참가자 4명 < 10명): 가입(10)+참가(3)+첫대결보너스(15)=28 -> +10 = 38 (Lv.2 문턱인 100엔 아직 못 미침)
     assert result["me"] == {
-        "joined": True, "rank": 2, "participation_points": 8, "rank_points": 25,
+        "joined": True, "rank": 2, "participation_points": PARTICIPATION_POINTS, "rank_points": 10,
         "level_from": 1, "level_to": 1, "leveled_up": False, "can_share_recipe": False, "shared_recipe_id": None,
     }
     balances = {}
-    for (headers, user), expected in zip(cooks, [(73, 1), (58, 1), (48, 1), (43, 1)]):
+    for (headers, user), expected in zip(cooks, [(43, 1), (38, 1), (34, 1), (32, 1)]):
         progress = client.get("/me", headers=headers).json()["progress"]
         balances[user["nickname"]] = (progress["total_points"], progress["level"])
         assert (progress["total_points"], progress["level"]) == expected
         assert progress["points"] == progress["total_points"]
 
     third = client.get(f"/battles/{battle_id}/result", headers=cooks[2][0]).json()["me"]
-    assert (third["rank"], third["rank_points"], third["leveled_up"]) == (3, 15, False)
+    assert (third["rank"], third["rank_points"], third["leveled_up"]) == (3, 6, False)
     last = client.get(f"/battles/{battle_id}/result", headers=cooks[3][0]).json()["me"]
-    assert (last["rank"], last["rank_points"], last["participation_points"]) == (4, 10, 8)  # 4등도 이제 보상 받아요 (20P의 절반)
+    assert (last["rank"], last["rank_points"], last["participation_points"]) == (4, 4, PARTICIPATION_POINTS)  # 4등도 이제 보상 받아요 (8P의 절반)
     bystander = client.get(f"/battles/{battle_id}/result", headers=voters[0][0]).json()["me"]
     assert bystander["joined"] is False and bystander["rank"] is None and bystander["participation_points"] == 0
 
     # asking again (or hitting other screens) never pays twice
     client.get(f"/battles/{battle_id}/result", headers=cooks[0][0])
     client.get("/me/home", headers=cooks[1][0])
-    assert client.get("/me", headers=cooks[1][0]).json()["progress"]["points"] == 58
+    assert client.get("/me", headers=cooks[1][0]).json()["progress"]["points"] == 38
     with SessionLocal() as db:
-        assert db.scalar(select(func.sum(LedgerEntry.points_delta)).where(LedgerEntry.user_id == cooks[1][1]["id"])) == 58
+        assert db.scalar(select(func.sum(LedgerEntry.points_delta)).where(LedgerEntry.user_id == cooks[1][1]["id"])) == 38
 
-    # the next week's battle points back at this one
+    # the next day's battle points back at this one
     nxt = current_battle(client, cooks[1][0])
     assert nxt["id"] != battle_id
     assert nxt["last_result"] == {
@@ -525,23 +544,23 @@ def test_finalization_ranks_ties_and_pays_points(client, freeze):
 def test_rank_rewards_taper_but_never_hit_zero(client, freeze):
     """3등 밑이라고 순위 보상이 0P가 되지 않아요 — 등수가 낮아질수록 줄어들되 바닥값(RANK_POINTS_FLOOR)까지만 내려가요."""
     cooks, voters, battle_id, entry_ids = run_battle(client, freeze, votes_for=(6, 5, 4, 3, 2, 1))
-    freeze(kst_at(1, 1, 1))
+    freeze(day_at(2, 1))
     result = client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()
     ranks = [(r["rank"], r["rank_points"]) for r in result["top10"]]
-    assert ranks == [(1, 40), (2, 25), (3, 15), (4, 10), (5, 7), (6, 5)]  # 6명이라 <10 → 전부 반값
+    assert ranks == [(1, 15), (2, 10), (3, 6), (4, 4), (5, 3), (6, 2)]  # 6명이라 <10 → 전부 반값
     assert all(points > 0 for _, points in ranks)
 
 
 def test_void_battle_when_fewer_than_three_join(client, freeze):
     cooks, voters, battle_id, _ = run_battle(client, freeze, votes_for=(1, 0))
-    freeze(kst_at(1, 1, 1))  # past the 24h voting window
+    freeze(day_at(2, 1))  # past the 24h voting window
     result = client.get(f"/battles/{battle_id}/result", headers=cooks[0][0]).json()
     assert result["status"] == "void" and result["participants"] == 2
     assert result["podium"] == [] and result["top10"] == []
-    assert result["me"]["rank"] is None and result["me"]["rank_points"] == 0 and result["me"]["participation_points"] == 8
+    assert result["me"]["rank"] is None and result["me"]["rank_points"] == 0 and result["me"]["participation_points"] == PARTICIPATION_POINTS
     assert result["me"]["can_share_recipe"] is False
     progress = client.get("/me", headers=cooks[0][0]).json()["progress"]
-    assert progress["points"] == 33  # signup(10) + participation(8) + first_battle_bonus(15); still theirs
+    assert progress["points"] == 28  # signup(10) + participation(3) + first_battle_bonus(15); still theirs
 
     home = client.get("/me/home", headers=cooks[0][0]).json()
     assert [(h["status"], h["rank"]) for h in home["history"]] == [("void", None)]
@@ -778,7 +797,7 @@ def test_winner_shares_recipe(client, freeze):
     early = client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=winner)
     assert early.status_code == 403 and early.json()["code"] == "not_winner"  # not finalized yet (still voting)
 
-    freeze(kst_at(1, 1, 1))  # past the 24h voting window
+    freeze(day_at(2, 1))  # past the 24h voting window
     result = client.get(f"/battles/{battle_id}/result", headers=winner).json()
     assert result["me"]["can_share_recipe"] is True
     assert client.post(f"/entries/{entry_ids[0]}/recipe", json=body, headers=runner_up).json()["code"] == "not_your_entry"
@@ -847,3 +866,31 @@ def test_locked_item_cannot_be_exchanged(client):
     locked = client.post(f"/shop/items/{chicken}/exchange", headers=a)
     assert locked.status_code == 403 and locked.json()["code"] == "level_locked" and "Lv.5" in locked.json()["detail"]
     assert client.get("/me", headers=a).json()["progress"]["points"] == 650
+
+
+def test_shop_item_monthly_stock_runs_out(client):
+    """예산 안에서 발송하도록 상품별 이번 달 재고 한도를 둬요 — 소진되면 sold_out."""
+    a, me = signup(client, "a@test.com")
+    set_user(me["id"], points=100000, total_points=100000)
+    snack = next(i["id"] for i in client.get("/shop", headers=a).json()["items"] if i["name"] == "편의점 1,000원권")
+    with SessionLocal() as db:
+        db.get(ShopItem, snack).monthly_limit = 2  # 테스트를 위해 재고를 낮춰요
+        db.commit()
+
+    assert client.post(f"/shop/items/{snack}/exchange", headers=a).status_code == 201
+    assert client.post(f"/shop/items/{snack}/exchange", headers=a).status_code == 201
+    sold_out = client.post(f"/shop/items/{snack}/exchange", headers=a)
+    assert sold_out.status_code == 409 and sold_out.json()["code"] == "item_sold_out"
+    listed = next(i for i in client.get("/shop", headers=a).json()["items"] if i["id"] == snack)
+    assert listed["state"] == "sold_out"
+
+
+def test_shop_per_user_monthly_exchange_cap(client):
+    """어뷰징 방지: 한 사람이 이번 달에 교환할 수 있는 총 횟수는 PER_USER_MONTHLY_EXCHANGES까지."""
+    a, me = signup(client, "a@test.com")
+    set_user(me["id"], points=100000, total_points=100000)
+    snack = next(i["id"] for i in client.get("/shop", headers=a).json()["items"] if i["name"] == "편의점 1,000원권")
+    for _ in range(PER_USER_MONTHLY_EXCHANGES):
+        assert client.post(f"/shop/items/{snack}/exchange", headers=a).status_code == 201
+    capped = client.post(f"/shop/items/{snack}/exchange", headers=a)
+    assert capped.status_code == 409 and capped.json()["code"] == "monthly_limit_reached"

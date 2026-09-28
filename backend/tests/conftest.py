@@ -40,13 +40,24 @@ def freeze(monkeypatch):
 def kst_at(week: int = 0, weekday: int = 0, hour: int = 12) -> dt.datetime:
     """A KST moment in the future, so login tokens minted while 'frozen' never look expired.
 
-    week 0 = the week that starts on the next Monday; weekday 0 = Monday. A battle created during
-    week N ends at kst_at(N + 1, 0, 0).
+    week 0 = the week that starts on the next Monday; weekday 0 = Monday. Still used by theme-battle
+    tests (THEME_COOKING_DAYS) and anywhere that just needs a stable future instant; daily-battle
+    tests use `day_at` below instead, since daily battles run day-to-day rather than week-to-week.
     """
     today = clock.kst_date(dt.datetime.now(dt.timezone.utc))
     monday = today + dt.timedelta(days=7 - today.weekday()) + dt.timedelta(weeks=week)
     day = monday + dt.timedelta(days=weekday)
     return dt.datetime.combine(day, dt.time(hour), tzinfo=clock.KST).astimezone(dt.timezone.utc)
+
+
+def day_at(day: int = 0, hour: int = 12) -> dt.datetime:
+    """A KST moment in the future, so login tokens minted while 'frozen' never look expired.
+
+    day 0 = tomorrow. A daily battle created on day N ends at day_at(N + 1, 0).
+    """
+    today = clock.kst_date(dt.datetime.now(dt.timezone.utc))
+    target = today + dt.timedelta(days=1 + day)
+    return dt.datetime.combine(target, dt.time(hour), tzinfo=clock.KST).astimezone(dt.timezone.utc)
 
 
 def signup(client, email, nickname=None, tier="intermediate", username=None):

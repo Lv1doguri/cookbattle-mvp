@@ -13,7 +13,7 @@ from ..content import (
     PARTICIPATION_POINTS,
     PHOTO_TTL,
     STREAK_BONUS_POINTS,
-    STREAK_WEEKS,
+    STREAK_DAYS,
     VOTE_POINTS,
 )
 from ..database import get_db
@@ -49,9 +49,9 @@ from ..services.battles import (
     get_or_create_daily_battle,
     get_or_create_theme_battle,
     is_open,
+    period_label,
     phase,
     ranked_entries,
-    week_label,
 )
 from ..services.points import grant_points
 from ..services.recipes import build_detail, recipe_query
@@ -103,7 +103,7 @@ def _last_result_for(db: Session, battle: Battle, user: User) -> Optional[LastRe
     return LastResultOut(
         battle_id=last.id,
         title=battle_title(last),
-        week_label=week_label(last.week_start),
+        week_label=period_label(last),
         status="void" if last.is_void else "ranked",
         joined=last_entry is not None,
         my_rank=last_entry.rank if last_entry else None,
@@ -125,7 +125,7 @@ def _battle_out(db: Session, battle: Battle, user: User, now) -> BattleOut:
         title=battle_title(battle),
         theme=battle.theme,
         description=battle.description,
-        week_label=week_label(battle.week_start),
+        week_label=period_label(battle),
         starts_at=battle.starts_at,
         ends_at=battle.ends_at,
         voting_ends_at=battle.voting_ends_at,
@@ -242,7 +242,8 @@ def join_battle(
 ):
     """요리 인증 화면의 [제출]. 각도별로 최소 ENTRY_MIN_PHOTOS장(재료/조리 중/완성 등)을 각각
     `POST /photos`로 올린 뒤, 그 id들을 순서대로 `photo_ids`에 담아 보내요. 첫 장이 목록/투표 썸네일로 쓰여요.
-    참가하면 +10P, 생애 첫 참가면 +30P 보너스가 더 붙고, 요일별 대결에 3주 연속 참가하면 +20P가 더 붙어요."""
+    참가하면 +3P, 생애 첫 참가면 +15P 보너스가 더 붙고, 요일별 대결에 7일 연속 참가하면 +15P가 더 붙어요.
+    (금액은 content.py의 PARTICIPATION_POINTS·FIRST_BATTLE_BONUS_POINTS·STREAK_DAYS·STREAK_BONUS_POINTS 참고)"""
     now = clock.utcnow()
     finalize_due_battles(db, now)
     battle = _get_battle(db, battle_id)
@@ -295,12 +296,12 @@ def join_battle(
         awarded += FIRST_BATTLE_BONUS_POINTS
 
     if battle.kind == BattleKind.daily:
-        if user.streak_last_week == battle.week_start - dt.timedelta(days=7):
+        if user.streak_last_week == battle.week_start - dt.timedelta(days=1):
             user.streak_weeks += 1
         else:
             user.streak_weeks = 1
         user.streak_last_week = battle.week_start
-        if user.streak_weeks % STREAK_WEEKS == 0:
+        if user.streak_weeks % STREAK_DAYS == 0:
             grant_points(db, user, STREAK_BONUS_POINTS, reason="streak_bonus", ref_type="entry", ref_id=entry.id)
             awarded += STREAK_BONUS_POINTS
 
@@ -411,7 +412,7 @@ def battle_result(battle_id: int, user: User = Depends(get_current_user), db: Se
         tier_label=_tier_label(battle),
         title=battle_title(battle),
         theme=battle.theme,
-        week_label=week_label(battle.week_start),
+        week_label=period_label(battle),
         participants=len(entries),
         status="void" if void else "ranked",
         podium=rows[:3],

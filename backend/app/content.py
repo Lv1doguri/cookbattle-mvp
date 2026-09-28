@@ -16,25 +16,34 @@ def level_threshold(level: int) -> int:
     return LEVEL_BASE_POINTS * (2 ** (level - 1) - 1)
 
 
-# 2026-09-28 재조정: 가입만 해도 공짜 기프티콘에 너무 가까워지는 문제가 있어서(가입+첫대결 보너스만으로
+# 2026-09-28 1차 재조정: 가입만 해도 공짜 기프티콘에 너무 가까워지는 문제가 있어서(가입+첫대결 보너스만으로
 # 편의점 1,000원권 120P의 절반), 무료로 거저 주는 값은 낮추고 "직접 대결해서 얻는" 보상 비중을 키웠어요.
-SIGNUP_BONUS_POINTS = 10  # 가입 보너스 (1회)
+SIGNUP_BONUS_POINTS = 10  # 가입 보너스 (1회, 대결 주기와 무관해서 안 바뀜)
 FIRST_BATTLE_BONUS_POINTS = 15  # 첫 대결 참가 보너스 (1회, PARTICIPATION_POINTS와 별도로 더해짐)
-PARTICIPATION_POINTS = 8  # paid when the entry is submitted
-VOTE_POINTS = 2  # paid once per battle when a vote is cast, during the voting window
-# 순위 보상. 3등까지는 확실히 크게, 그 아래는 완주 보상 개념으로 조금씩 줄여서 줘요 —
+
+# 2026-09-29 2차 재조정: 대결 주기를 주 단위 -> 일 단위로 바꾸면서, 참가 기회가 그룹당 약 7배 늘었어요.
+# 옛 금액을 그대로 두면 활발한 유저의 월 획득 포인트가 기존 대비 5~7배로 뛰어서 적자 위험이 커지므로,
+# "매일 성실히 참가하는 유저의 월 획득 포인트 총량"이 기존 주간 설계와 비슷한 수준(월 150~300P)을
+# 유지하도록 이벤트당 금액을 낮췄어요. 상점 가격(1P≈10원, 원가 대비 1.5배)은 그대로 둬서 이윤 구조는
+# 안 건드리고, "얼마나 자주 얼마씩 버는지"만 재조정한 거예요.
+PARTICIPATION_POINTS = 3  # paid when the entry is submitted (구: 8P/주 1회 -> 3P/일 1회)
+VOTE_POINTS = 1  # paid once per battle when a vote is cast, during the voting window (구: 2P)
+# 순위 보상. 1등을 확실히 크게, 그 아래는 완주 보상 개념으로 조금씩 줄여서 줘요 —
 # 4등 밑이라고 0P가 되는 사람이 없게(2026-09-28: "4등인데 0P"라는 피드백으로 도입).
-RANK_POINTS = {1: 80, 2: 50, 3: 30, 4: 20, 5: 15}
-RANK_POINTS_FLOOR = 10  # 6등 이하는 전부 이만큼 (halved 대상이면 더 줄어요)
+# 금액은 구 RANK_POINTS({1:80,2:50,3:30,4:20,5:15}, floor 10)를 일 단위 빈도에 맞춰 낮춘 값.
+RANK_POINTS = {1: 30, 2: 20, 3: 12, 4: 8, 5: 6}
+RANK_POINTS_FLOOR = 4  # 6등 이하는 전부 이만큼 (halved 대상이면 더 줄어요)
 
 
 def rank_points_for(rank: int) -> int:
     return RANK_POINTS.get(rank, RANK_POINTS_FLOOR)
 MIN_PARTICIPANTS = 3  # fewer than this and the battle is void (no ranking, no rank points)
 RANK_POINTS_FULL_MIN_PARTICIPANTS = 10  # fewer than this (but >= MIN_PARTICIPANTS) and rank points are halved
-STREAK_WEEKS = 3  # 이만큼 연속으로 매주 참가하면 보너스 (그 다음 STREAK_WEEKS주 연속 참가 시 또 지급)
-STREAK_BONUS_POINTS = 20
-REVIEW_POINTS = 1  # 레시피 후기 1건당
+# 매일 연속 참가 보너스. 옛날엔 "3주 연속"(3번 참가)이었는데, 매일 대결이 되면서 3일은 너무 쉬운 문턱이라
+# "일주일 개근"(7일 연속)으로 올리고, 그만큼 자주 터지니 보너스 자체는 20P->15P로 낮췄어요.
+STREAK_DAYS = 7  # 이만큼 연속으로 매일 참가하면 보너스 (그 다음 STREAK_DAYS일 연속 참가 시 또 지급)
+STREAK_BONUS_POINTS = 15
+REVIEW_POINTS = 1  # 레시피 후기 1건당 (대결 주기와 무관해서 안 바뀜)
 REVIEW_DAILY_CAP_POINTS = 3  # 후기로 하루에 받을 수 있는 포인트 상한
 
 # 후기의 "실제로 해봤어요" 난이도 태그 (인증샷과 함께 쓰여요). 포인트는 REVIEW_POINTS 그대로 — 별도 보너스 없음.
@@ -57,9 +66,11 @@ ENTRY_MAX_PHOTOS = 6
 # 대회가 끝나면 바로 집계하지 않고, 24시간 동안 투표만 받은 뒤에 집계해요.
 VOTING_WINDOW = dt.timedelta(hours=24)
 
-# ---- weekly group battles ("오늘의 대결") -----------------------------------
-# A battle runs Monday 00:00 KST -> next Monday 00:00 KST, one per skill group.
-BATTLE_EPOCH = dt.date(2026, 8, 31)  # a Monday; week 0 uses BATTLE_THEMES[0]
+# ---- daily group battles ("오늘의 대결") --------------------------------------
+# 2026-09-29: 이름 그대로 매일 새 대결이 열리게 바꿨어요(예전엔 "오늘의 대결"인데 실제로는
+# 주 단위였어요). 하루 00:00 KST -> 다음 날 00:00 KST가 한 판, 실력 그룹마다 따로 열려요.
+# BATTLE_THEMES를 날짜 순서대로 하루에 하나씩 돌리므로 8개 주제가 8일 주기로 반복돼요.
+BATTLE_EPOCH = dt.date(2026, 8, 31)  # day 0 uses BATTLE_THEMES[0]
 BATTLE_THEMES = [
     {
         "theme": "밥 요리",
@@ -125,12 +136,16 @@ THEME_BATTLES = [
 
 # ---- shop seed: (name, price_points, required_level, photo filename under app/seed_photos/shop/) ----
 # 가격은 원가 × 약 1.5 (2026-09-28: 포인트를 너무 쉽게 모아서 적자 위험이 있다는 피드백으로 1.2 -> 1.5로 상향)
+# 월 재고 한도(=이 상품을 이번 달에 총 몇 개까지 교환해줄지). 예산 안에서 발송하려는 안전장치라
+# 가격이 쌀수록 넉넉하게, 비쌀수록 빠듯하게 잡았어요. None이면 무제한.
+# (name, price_points, required_level, photo filename, monthly_limit)
 SHOP_SEED = [
-    ("편의점 1,000원권", 150, 1, "convenience-store.jpg"),
-    ("저가 커피 아메리카노", 300, 2, "coffee.jpg"),
-    ("학식 식권", 800, 3, "cafeteria-meal.jpg"),
-    ("치킨 기프티콘", 3000, 5, "fried-chicken.jpg"),
+    ("편의점 1,000원권", 150, 1, "convenience-store.jpg", 200),
+    ("저가 커피 아메리카노", 300, 2, "coffee.jpg", 150),
+    ("학식 식권", 800, 3, "cafeteria-meal.jpg", 80),
+    ("치킨 기프티콘", 3000, 5, "fried-chicken.jpg", 20),
 ]
+PER_USER_MONTHLY_EXCHANGES = 5  # 1인당 이번 달에 교환할 수 있는 총 횟수(상품 종류 무관, 어뷰징 방지)
 
 # ---- official account + sample recipes ------------------------------------
 # Recipes normally come from battle winners, so a fresh DB would show an empty recipe tab.

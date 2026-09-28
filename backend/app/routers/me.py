@@ -13,8 +13,8 @@ from ..errors import ApiError
 from ..models import Entry, Recipe, RecipeSave, RecipeView, Review, User
 from ..schemas import HistoryItem, HomeOut, MeOut, MyReviewOut, ProfileUpdateIn, RecipePage
 from ..security import get_current_user, hash_password
-from ..services.accounts import build_me, count, current_week_end, nickname_taken
-from ..services.battles import battle_title, finalize_due_battles, week_label
+from ..services.accounts import build_me, count, next_daily_battle_start, nickname_taken
+from ..services.battles import battle_title, finalize_due_battles, period_label
 from ..services.images import delete_image, read_image, write_image
 from ..services.recipes import build_cards, recipe_page, recipe_query
 
@@ -51,7 +51,7 @@ def update_me(body: ProfileUpdateIn, user: User = Depends(get_current_user), db:
             user.next_tier_at = None
         else:
             user.next_tier = body.tier
-            user.next_tier_at = current_week_end(clock.utcnow())
+            user.next_tier_at = next_daily_battle_start(clock.utcnow())
     try:
         db.commit()
     except IntegrityError:
@@ -93,7 +93,7 @@ def home(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
             entry_id=e.id,
             title=battle_title(e.battle),
             theme=e.battle.theme,
-            week_label=week_label(e.battle.week_start),
+            week_label=period_label(e.battle),
             tier=e.battle.tier,
             tier_label=TIER_LABEL[e.battle.tier] if e.battle.tier else None,
             status="void" if e.battle.is_void else ("ranked" if e.rank is not None else "in_progress"),

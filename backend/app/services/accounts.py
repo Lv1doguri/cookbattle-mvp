@@ -43,9 +43,10 @@ def apply_pending_tier(db: Session, user: User, now: dt.datetime) -> None:
         db.commit()
 
 
-def current_week_end(now: dt.datetime) -> dt.datetime:
-    monday = clock.kst_week_start(clock.kst_date(now))
-    return clock.kst_day_bounds(monday + dt.timedelta(days=7))[0]
+def next_daily_battle_start(now: dt.datetime) -> dt.datetime:
+    """내일 00:00 KST — 실력 그룹을 바꾸면 "다음 대결부터" 적용되는데, 대결이 매일 열리니 그게 곧 내일이에요."""
+    today = clock.kst_date(now)
+    return clock.kst_day_bounds(today + dt.timedelta(days=1))[0]
 
 
 def build_me(db: Session, user: User) -> MeOut:

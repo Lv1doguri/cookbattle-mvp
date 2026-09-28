@@ -31,7 +31,7 @@ from .content import (
     REVIEW_POINTS,
     SIGNUP_BONUS_POINTS,
     STREAK_BONUS_POINTS,
-    STREAK_WEEKS,
+    STREAK_DAYS,
     THEME_BATTLES,
     THEME_COOKING_DAYS,
     THEME_EPOCH,
@@ -169,12 +169,12 @@ def _join_as_demo_user(db: Session, battle: Battle, dish: str, votes: int, creat
     if is_first_ever:
         grant_points(db, user, FIRST_BATTLE_BONUS_POINTS, reason="first_battle_bonus", ref_type="entry", ref_id=entry.id)
 
-    if user.streak_last_week == battle.week_start - dt.timedelta(days=7):
+    if user.streak_last_week == battle.week_start - dt.timedelta(days=1):
         user.streak_weeks += 1
     else:
         user.streak_weeks = 1
     user.streak_last_week = battle.week_start
-    if user.streak_weeks % STREAK_WEEKS == 0:
+    if user.streak_weeks % STREAK_DAYS == 0:
         grant_points(db, user, STREAK_BONUS_POINTS, reason="streak_bonus", ref_type="entry", ref_id=entry.id)
     db.commit()
     return entry
@@ -219,42 +219,44 @@ def seed_demo(db: Session) -> None:
 
     now = clock.utcnow()
     today = clock.kst_date(now)
-    this_week = clock.kst_week_start(today)
 
     demo = _make_user(
         db, username=DEMO_USERNAME, nickname=DEMO_NICKNAME, password=DEMO_PASSWORD,
-        tier=Tier.intermediate, created_at=now - dt.timedelta(weeks=6),
+        tier=Tier.intermediate, created_at=now - dt.timedelta(days=9),
     )
     grant_points(db, demo, SIGNUP_BONUS_POINTS, reason="signup_bonus")
 
-    fillers = _get_fillers(db, now - dt.timedelta(weeks=6))
+    fillers = _get_fillers(db, now - dt.timedelta(days=9))
 
-    # ---- 지난 5주간 대결 이력 (오래된 것부터: streak/첫대결 보너스가 순서대로 쌓여요) ----------
-    # share=False인 마지막 주(면 요리, 1등)는 일부러 레시피 공유를 안 해뒀어요 — 발표 중
+    # ---- 지난 7일간 매일 대결 이력 (오래된 것부터: streak/첫대결 보너스가 순서대로 쌓여요) -----------
+    # 정확히 STREAK_DAYS(7)일을 채워서 "일주일 개근" 보너스가 마지막 날 한 번 터져요.
+    # share=False인 마지막 날(면 요리, 1등)은 일부러 레시피 공유를 안 해뒀어요 — 발표 중
     # "비법 레시피 공유하기" 버튼을 직접 눌러 보여주는 몫으로 남겨둔 거예요.
     history = [
-        # (weeks_ago, theme, description, dish, my_votes, filler_votes(desc), share)
-        (5, "계란 요리", "계란이 메인인 든든한 한 끼", "간장계란밥", 3, [2, 1], True),
-        (4, "고기 요리", "고기가 메인인 든든한 한 끼", "제육볶음", 4, [5, 3, 2, 1], False),
-        (3, "건강한 요리", "영양 균형을 맞춘 든든한 한 끼", "닭가슴살 샐러드", 3, [5, 4, 2], False),
-        (2, "밥 요리", "밥이 메인인 든든한 한 끼", "매운 김치볶음밥", 6, [5, 4, 3, 2], True),
+        # (days_ago, theme, description, dish, my_votes, filler_votes(desc), share)
+        (7, "계란 요리", "계란이 메인인 든든한 한 끼", "간장계란밥", 3, [2, 1], True),
+        (6, "고기 요리", "고기가 메인인 든든한 한 끼", "제육볶음", 4, [5, 3, 2, 1], False),
+        (5, "건강한 요리", "영양 균형을 맞춘 든든한 한 끼", "닭가슴살 샐러드", 3, [5, 4, 2], False),
+        (4, "밥 요리", "밥이 메인인 든든한 한 끼", "매운 김치볶음밥", 6, [5, 4, 3, 2], True),
+        (3, "5천원 이하", "5,000원 이하로 완성한 든든한 한 끼", "참치마요 덮밥", 4, [5, 3, 2, 1], False),
+        (2, "라면", "라면을 색다르게 업그레이드한 한 끼", "수제 라멘", 5, [6, 3, 2, 1], False),
         (1, "면 요리", "소스까지 직접 만든 면 요리", "매콤 비빔국수", 7, [5, 4, 3, 2], False),
     ]
 
     shared_recipes: dict = {}
-    for weeks_ago, theme, description, dish, my_votes, filler_votes, share in history:
-        week_start = this_week - dt.timedelta(weeks=weeks_ago)
-        starts_at = clock.kst_day_bounds(week_start)[0]
-        # week_start이 실제 그 주의 월요일이긴 하지만, ends_at을 "week_start+7일" 공식 그대로 쓰면
-        # weeks_ago=1일 때 voting_ends_at이 아직 실제 시간 기준 미래일 수 있어요(투표 마감 전인데
-        # 이미 순위/포인트가 매겨진 모순 상태). 그래서 여기서는 무조건 지금보다 확실히 과거가 되게 잡아요.
-        ends_at = min(clock.kst_day_bounds(week_start + dt.timedelta(days=7))[0], now - VOTING_WINDOW - dt.timedelta(hours=1))
+    for days_ago, theme, description, dish, my_votes, filler_votes, share in history:
+        day = today - dt.timedelta(days=days_ago)
+        starts_at = clock.kst_day_bounds(day)[0]
+        # day가 오늘에 가까울수록(특히 days_ago=1) voting_ends_at이 실제 시간 기준으로 아직 미래일
+        # 수 있어요(투표 마감 전인데 이미 순위/포인트가 매겨진 모순 상태). 그래서 무조건 지금보다
+        # 확실히 과거가 되게 안전 마진을 둬요.
+        ends_at = min(clock.kst_day_bounds(day + dt.timedelta(days=1))[0], now - VOTING_WINDOW - dt.timedelta(hours=1))
         voting_ends_at = ends_at + VOTING_WINDOW
         battle = _daily_battle(
-            db, tier=Tier.intermediate, theme=theme, description=description, week_start=week_start,
+            db, tier=Tier.intermediate, theme=theme, description=description, week_start=day,
             starts_at=starts_at, ends_at=ends_at, voting_ends_at=voting_ends_at,
         )
-        created_at = starts_at + dt.timedelta(days=1)
+        created_at = starts_at + dt.timedelta(hours=12)
         my_entry = _join_as_demo_user(db, battle, dish, my_votes, created_at, demo)
         entries = [my_entry]
         for filler, votes in zip(fillers, filler_votes):
@@ -270,38 +272,38 @@ def seed_demo(db: Session) -> None:
             )
             shared_recipes[dish] = recipe.id
 
-    # ---- 이번 주 대결 (3개 그룹, '내 그룹'은 아직 참가 전 — 발표 중 실제로 참가해 보이는 용도) -------
+    # ---- 오늘 대결 (3개 그룹, '내 그룹'은 아직 참가 전 — 발표 중 실제로 참가해 보이는 용도) -------
     tier_labels = [Tier.beginner, Tier.intermediate, Tier.advanced]
     tier_desc = {
         Tier.beginner: "라면에 한 가지만 더해도 OK",
         Tier.intermediate: "라면을 색다르게 업그레이드한 한 끼",
         Tier.advanced: "육수부터 직접 만든 라면 요리",
     }
-    this_week_starts = clock.kst_day_bounds(this_week)[0]
-    this_week_ends = clock.kst_day_bounds(this_week + dt.timedelta(days=7))[0]
+    today_starts = clock.kst_day_bounds(today)[0]
+    today_ends = clock.kst_day_bounds(today + dt.timedelta(days=1))[0]
     for tier in tier_labels:
         battle = _daily_battle(
-            db, tier=tier, theme="라면", description=tier_desc[tier], week_start=this_week,
-            starts_at=this_week_starts, ends_at=this_week_ends, voting_ends_at=this_week_ends + VOTING_WINDOW,
+            db, tier=tier, theme="라면", description=tier_desc[tier], week_start=today,
+            starts_at=today_starts, ends_at=today_ends, voting_ends_at=today_ends + VOTING_WINDOW,
         )
         for filler, dish in zip(fillers[:2], ["수제 라멘", "투움바라면"]):
             _add_entry(db, battle, filler, dish, 0, now - dt.timedelta(hours=3))
 
-    # 지난주 대결 -> 대결 홈의 "지난 대결 결과" 카드. 중급은 위 5주 이력의 1주 전(면 요리) 대결이
+    # 어제 대결 -> 대결 홈의 "지난 대결 결과" 카드. 중급은 위 7일 이력의 하루 전(면 요리) 대결이
     # 이미 이 자리를 채우므로, 초급/상급만 따로 채워요.
-    last_week = this_week - dt.timedelta(weeks=1)
-    last_week_starts = clock.kst_day_bounds(last_week)[0]
+    yesterday = today - dt.timedelta(days=1)
+    yesterday_starts = clock.kst_day_bounds(yesterday)[0]
     # 위 이력 루프와 같은 이유로, 투표 마감이 실제 "지금"보다 미래가 되지 않게 안전하게 당겨요.
-    last_week_ends = min(clock.kst_day_bounds(this_week)[0], now - VOTING_WINDOW - dt.timedelta(hours=1))
+    yesterday_ends = min(clock.kst_day_bounds(today)[0], now - VOTING_WINDOW - dt.timedelta(hours=1))
     for tier in (Tier.beginner, Tier.advanced):
         prior_battle = _daily_battle(
-            db, tier=tier, theme="라면", description=tier_desc[tier], week_start=last_week,
-            starts_at=last_week_starts, ends_at=last_week_ends, voting_ends_at=last_week_ends + VOTING_WINDOW,
+            db, tier=tier, theme="라면", description=tier_desc[tier], week_start=yesterday,
+            starts_at=yesterday_starts, ends_at=yesterday_ends, voting_ends_at=yesterday_ends + VOTING_WINDOW,
         )
         prior_entries = []
         for filler, (dish, votes) in zip(fillers, [("투움바라면", 5), ("해물라면", 4), ("수제 라멘", 3), ("크림새우라면", 2), ("돈코츠비빔라면", 1)]):
-            prior_entries.append(_add_entry(db, prior_battle, filler, dish, votes, last_week_starts + dt.timedelta(days=1)))
-        _finalize(db, prior_battle, prior_entries, last_week_ends + dt.timedelta(minutes=1))
+            prior_entries.append(_add_entry(db, prior_battle, filler, dish, votes, yesterday_starts + dt.timedelta(hours=12)))
+        _finalize(db, prior_battle, prior_entries, yesterday_ends + dt.timedelta(minutes=1))
 
     # ---- 테마 대결: 투표 진행 중 상태로 (대결 홈의 "지난 대회 투표하기" + 실시간 랭킹 미리보기) ------
     cycle_index = (today - THEME_EPOCH).days // THEME_COOKING_DAYS
@@ -352,10 +354,10 @@ def seed_demo(db: Session) -> None:
 
     print(
         f"Seeded demo account '{DEMO_USERNAME}' / '{DEMO_PASSWORD}' — "
-        f"Lv.{level_for(demo.total_points)}, {demo.points}P (누적 {demo.total_points}P), {demo.streak_weeks}주 연속 참가."
+        f"Lv.{level_for(demo.total_points)}, {demo.points}P (누적 {demo.total_points}P), {demo.streak_weeks}일 연속 참가."
     )
     print(f"Shared recipes: {shared_recipes}")
-    print("This week's 라면 대결(중급)은 아직 안 들어가 있어요 — 발표 중 실제로 참가해 보여주세요.")
+    print("오늘의 라면 대결(중급)은 아직 안 들어가 있어요 — 발표 중 실제로 참가해 보여주세요.")
 
 
 if __name__ == "__main__":

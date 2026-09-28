@@ -34,9 +34,20 @@ def battle_title(battle: Battle) -> str:
 
 
 def week_label(week_start: dt.date) -> str:
-    """'9월 3주차'. A week belongs to the month its Thursday falls in, so labels never straddle months."""
+    """'9월 3주차'. A week belongs to the month its Thursday falls in, so labels never straddle months.
+    Still used for theme battles (THEME_COOKING_DAYS), which keep their multi-day cadence."""
     anchor = week_start + dt.timedelta(days=3)
     return f"{anchor.month}월 {(anchor.day - 1) // 7 + 1}주차"
+
+
+def day_label(day: dt.date) -> str:
+    """'9월 28일'. Used for daily battles now that they run one-per-day."""
+    return f"{day.month}월 {day.day}일"
+
+
+def period_label(battle: Battle) -> str:
+    """day_label for daily battles, week_label for theme battles."""
+    return day_label(battle.week_start) if battle.kind == BattleKind.daily else week_label(battle.week_start)
 
 
 def phase(battle: Battle, now: dt.datetime) -> BattlePhase:
@@ -58,27 +69,29 @@ def can_vote_now(battle: Battle, now: dt.datetime) -> bool:
 
 
 def get_or_create_daily_battle(db: Session, tier: Tier, now: dt.datetime) -> Battle:
-    """'오늘의 대결': the battle for this KST week and skill group. Created lazily on first request.
+    """'오늘의 대결': the battle for this KST day and skill group. Created lazily on first request.
+    `week_start` holds the day itself here (column name kept from the old weekly design).
 
     Commits when it creates, so only call it where the session has no other pending work.
     """
-    week_start = clock.kst_week_start(clock.kst_date(now))
-    stmt = select(Battle).where(Battle.kind == BattleKind.daily, Battle.week_start == week_start, Battle.tier == tier)
+    day = clock.kst_date(now)
+    stmt = select(Battle).where(Battle.kind == BattleKind.daily, Battle.week_start == day, Battle.tier == tier)
     battle = db.scalar(stmt)
     if battle is not None:
         return battle
 
-    schedule = BATTLE_THEMES[((week_start - BATTLE_EPOCH).days // 7) % len(BATTLE_THEMES)]
+    schedule = BATTLE_THEMES[(day - BATTLE_EPOCH).days % len(BATTLE_THEMES)]
+    day_start, day_end = clock.kst_day_bounds(day)
     db.add(
         Battle(
             kind=BattleKind.daily,
             tier=tier,
             theme=schedule["theme"],
             description=schedule[tier],
-            week_start=week_start,
-            starts_at=clock.kst_day_bounds(week_start)[0],
-            ends_at=clock.kst_day_bounds(week_start + dt.timedelta(days=7))[0],
-            voting_ends_at=clock.kst_day_bounds(week_start + dt.timedelta(days=7))[0] + VOTING_WINDOW,
+            week_start=day,
+            starts_at=day_start,
+            ends_at=day_end,
+            voting_ends_at=day_end + VOTING_WINDOW,
         )
     )
     try:

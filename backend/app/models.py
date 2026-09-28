@@ -83,9 +83,11 @@ class User(Base):
     total_points: Mapped[int] = mapped_column(Integer, default=0)  # lifetime earned; drives level
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
 
-    # "3주 연속 참가" 보너스 추적용. 요일별(daily) 대결에 참가할 때마다 갱신돼요.
-    streak_weeks: Mapped[int] = mapped_column(Integer, default=0)  # 연속으로 참가한 주 수
-    streak_last_week: Mapped[Optional[dt.date]] = mapped_column(Date, nullable=True)  # 마지막으로 참가를 인정받은 week_start
+    # "STREAK_DAYS일 연속 참가" 보너스 추적용. 대결이 일 단위로 바뀌면서 이 필드는 이제 "연속으로
+    # 참가한 날 수"를 세요(컬럼명은 이전 주 단위 설계 때 이름 그대로 남아있을 뿐, DB 재생성 없이
+    # 의미만 바꾼 거예요). 요일별(daily) 대결에 참가할 때마다 갱신돼요.
+    streak_weeks: Mapped[int] = mapped_column(Integer, default=0)  # 연속으로 참가한 일수
+    streak_last_week: Mapped[Optional[dt.date]] = mapped_column(Date, nullable=True)  # 마지막으로 참가를 인정받은 날(daily battle의 week_start)
 
 
 # Nicknames are unique ignoring case ("Yuri" == "yuri").
@@ -108,7 +110,7 @@ class Photo(Base):
 class Battle(Base):
     """One battle. Two kinds run in parallel:
 
-    - daily: one per (week, skill group), Monday 00:00 KST -> next Monday 00:00 KST.
+    - daily: one per (day, skill group), 00:00 KST -> next day 00:00 KST.
     - theme: one shared battle for everyone (tier is null), running THEME_COOKING_DAYS.
 
     Both go cooking -> voting (a fixed VOTING_WINDOW after cook_ends_at) -> closed once
@@ -129,7 +131,7 @@ class Battle(Base):
     tier: Mapped[Optional[Tier]] = mapped_column(_enum(Tier), nullable=True)  # null for kind=theme (everyone)
     theme: Mapped[str] = mapped_column(String(40))
     description: Mapped[str] = mapped_column(String(120))
-    week_start: Mapped[dt.date] = mapped_column(Date)  # theme battles: the cooking-period start date
+    week_start: Mapped[dt.date] = mapped_column(Date)  # daily: the day it covers · theme: the cooking-period start date
     starts_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
     ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)  # cooking deadline
     voting_ends_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)
@@ -298,6 +300,7 @@ class ShopItem(Base):
     required_level: Mapped[int] = mapped_column(Integer, default=1)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     photo_filename: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    monthly_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 이번 달 총 교환 가능 개수. None=무제한
 
 
 class Exchange(Base):

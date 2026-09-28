@@ -44,10 +44,10 @@ def seed_all(db: Session) -> None:
 def _seed_shop(db: Session) -> None:
     if db.scalar(select(func.count()).select_from(ShopItem)) != 0:
         return
-    for name, price, required_level, photo in SHOP_SEED:
+    for name, price, required_level, photo, monthly_limit in SHOP_SEED:
         db.add(ShopItem(
             name=name, price_points=price, required_level=required_level,
-            photo_filename=_copy_shop_photo(photo),
+            photo_filename=_copy_shop_photo(photo), monthly_limit=monthly_limit,
         ))
     db.commit()
 

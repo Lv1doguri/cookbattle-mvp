@@ -90,7 +90,7 @@ class MeOut(UserBrief):
     progress: Progress
     saved_recipe_count: int
     review_count: int
-    streak_weeks: int  # 연속으로 매주 요일별 대결에 참가한 주 수 (STREAK_WEEKS마다 보너스)
+    streak_weeks: int  # 연속으로 매일 요일별 대결에 참가한 일수 (필드명은 예전 주 단위 설계 때 그대로, STREAK_DAYS마다 보너스)
 
 
 class AuthOut(BaseModel):
@@ -400,7 +400,7 @@ class ShopItemOut(BaseModel):
     name: str
     price_points: int
     required_level: int
-    state: str  # available | insufficient_points | locked
+    state: str  # available | insufficient_points | locked | sold_out
     points_short: int  # insufficient_points일 때 "N P 더 필요해요"
     photo_url: Optional[str]
 
