@@ -169,9 +169,10 @@ class Entry(Base):
 
 
 class EntryComment(Base):
-    """A comment + 비주얼/가성비 (visual/value) 1-5 star ratings on a battle entry, left when voting
-    for it (배틀 작품 평가). No taste rating - voters only ever see a photo, never taste the dish.
-    One per user per entry."""
+    """A comment + 비주얼/가성비/따라하기 쉬움 (visual/value/ease) 1-5 star ratings on a battle entry,
+    left when voting for it (배틀 작품 평가) - the three categories from the team's feature plan
+    (docs/feature-plan-자취요리왕.md). No taste rating - voters only ever see a photo, never taste
+    the dish. One per user per entry."""
 
     __tablename__ = "entry_comments"
     __table_args__ = (UniqueConstraint("entry_id", "user_id", name="uq_one_comment_per_entry"),)
@@ -182,6 +183,7 @@ class EntryComment(Base):
     text: Mapped[str] = mapped_column(String(500))
     visual_rating: Mapped[int] = mapped_column(Integer)  # 비주얼, 1-5
     value_rating: Mapped[int] = mapped_column(Integer)  # 가성비, 1-5
+    ease_rating: Mapped[int] = mapped_column(Integer)  # 따라하기 쉬움, 1-5
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
     updated_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
 
@@ -217,6 +219,7 @@ class Recipe(Base):
 
     save_count: Mapped[int] = mapped_column(Integer, default=0)
     comment_count: Mapped[int] = mapped_column(Integer, default=0)
+    cook_count: Mapped[int] = mapped_column(Integer, default=0)  # "따라 만들었어요" 인증 수
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now, index=True)
 
     author: Mapped["User"] = relationship()
@@ -255,6 +258,17 @@ class Step(Base):
 
 class RecipeSave(Base):
     __tablename__ = "recipe_saves"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
+
+
+class RecipeCook(Base):
+    """'따라 만들었어요' 인증 (기획서: 따라하기 레시피 완료 인증도 작은 점수 주기). 레시피 하나당
+    1인 1회만 - 포인트 파밍 방지, 여러 번 만들어도 처음 한 번만 인정."""
+
+    __tablename__ = "recipe_cooks"
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), primary_key=True, index=True)

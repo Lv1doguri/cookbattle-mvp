@@ -33,6 +33,7 @@ STREAK_WEEKS = 3  # N consecutive weekly battles joined -> streak bonus
 STREAK_BONUS = 20
 REVIEW_POINTS = 1  # per recipe review/comment written
 REVIEW_DAILY_CAP = 3  # review points are capped per calendar day (KST) to stop spam
+RECIPE_COOK_POINTS = 5  # "따라 만들었어요" 인증, 레시피당 1회 (기획서: 따라하기 완료 인증도 작은 점수)
 POINTS_EXPIRE_AFTER = dt.timedelta(days=365)  # spendable balance only; lifetime total/level untouched
 
 # ---- shop anti-loss safeguards ---------------------------------------------
@@ -133,6 +134,7 @@ THEME_BATTLES = [
     {"theme": "한 그릇 요리 대회", "description": "설거지거리 하나로 끝내는 한 그릇 요리"},
     {"theme": "자취 아이돌 대회", "description": "자취방에서 가장 자랑하고 싶은 요리"},
     {"theme": "매운맛 대회", "description": "맵기로 승부하는 요리"},
+    {"theme": "전자레인지 요리 대회", "description": "전자레인지만 써서 만든 요리 (기숙사생 맞춤)"},
 ]
 
 # ---- shop seed: (name, price_points, required_level, monthly_limit) -------

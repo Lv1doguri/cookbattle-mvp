@@ -6,12 +6,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from .. import clock
-from ..content import REVIEW_DAILY_CAP, REVIEW_POINTS
+from ..content import RECIPE_COOK_POINTS, REVIEW_DAILY_CAP, REVIEW_POINTS
 from ..database import get_db
 from ..enums import Budget, Category, CookTime, Tier, Tool
 from ..errors import ApiError
-from ..models import LedgerEntry, Recipe, RecipeSave, RecipeView, Review, User
-from ..schemas import RecipeDetailOut, RecipePage, ReviewCreateIn, ReviewOut, ReviewPage, SaveOut
+from ..models import LedgerEntry, Recipe, RecipeCook, RecipeSave, RecipeView, Review, User
+from ..schemas import CookOut, RecipeDetailOut, RecipePage, ReviewCreateIn, ReviewOut, ReviewPage, SaveOut
 from ..security import get_current_user
 from ..services.accounts import count, user_brief
 from ..services.points import grant_points
@@ -114,6 +114,25 @@ def unsave_recipe(recipe_id: int, user: User = Depends(get_current_user), db: Se
         db.commit()
         db.refresh(recipe)
     return SaveOut(saved=False, saves=recipe.save_count)
+
+
+@router.post("/{recipe_id}/cook", response_model=CookOut, status_code=201)
+def cook_recipe(recipe_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """레시피 상세의 [따라 만들었어요] 인증. 레시피 하나당 1인 1회만 포인트가 붙어요(파밍 방지)."""
+    recipe = _get_recipe(db, recipe_id)
+    if db.get(RecipeCook, (user.id, recipe_id)) is not None:
+        raise ApiError(409, "already_cooked", "이미 인증한 레시피예요")
+    db.add(RecipeCook(user_id=user.id, recipe_id=recipe_id))
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise ApiError(409, "already_cooked", "이미 인증한 레시피예요")
+    db.execute(update(Recipe).where(Recipe.id == recipe_id).values(cook_count=Recipe.cook_count + 1))
+    grant_points(db, user, RECIPE_COOK_POINTS, reason="recipe_cook", ref_type="recipe", ref_id=recipe_id)
+    db.commit()
+    db.refresh(recipe)
+    return CookOut(cooked=True, cooks=recipe.cook_count, points_awarded=RECIPE_COOK_POINTS)
 
 
 @router.get("/{recipe_id}/reviews", response_model=ReviewPage)

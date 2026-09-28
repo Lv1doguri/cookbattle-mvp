@@ -265,12 +265,12 @@ def entry_outs(
     ratings_by_entry: dict = {}
     if entries:
         rows = db.execute(
-            select(EntryComment.entry_id, EntryComment.visual_rating, EntryComment.value_rating).where(
-                EntryComment.entry_id.in_([e.id for e in entries])
-            )
+            select(
+                EntryComment.entry_id, EntryComment.visual_rating, EntryComment.value_rating, EntryComment.ease_rating
+            ).where(EntryComment.entry_id.in_([e.id for e in entries]))
         )
-        for entry_id, visual, value in rows:
-            ratings_by_entry.setdefault(entry_id, []).append((visual + value) / 2)
+        for entry_id, visual, value, ease in rows:
+            ratings_by_entry.setdefault(entry_id, []).append((visual + value + ease) / 3)
     return [
         entry_out(e, entry_state(e, viewer_id, my_vote_entry_id, can_vote), ratings_by_entry.get(e.id, []))
         for e in entries

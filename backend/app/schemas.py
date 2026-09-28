@@ -160,6 +160,8 @@ class RecipeCard(BaseModel):
     saves: int
     is_saved: bool
     is_essential: bool  # "자취 필수"
+    cooks: int  # "따라 만들었어요" 인증 수
+    is_cooked: bool  # 내가 이미 인증했는지
 
 
 class ToolOut(BaseModel):
@@ -195,6 +197,14 @@ class RecipePage(BaseModel):
 class SaveOut(BaseModel):
     saved: bool
     saves: int
+
+
+class CookOut(BaseModel):
+    """레시피 상세의 [따라 만들었어요] 응답. 레시피 하나당 1인 1회만 포인트가 붙어요."""
+
+    cooked: bool
+    cooks: int
+    points_awarded: int
 
 
 class ReviewCreateIn(BaseModel):
@@ -252,12 +262,14 @@ class EntryCommentCreateIn(BaseModel):
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
     visual_rating: int = Field(ge=1, le=5)  # 비주얼
     value_rating: int = Field(ge=1, le=5)  # 가성비
+    ease_rating: int = Field(ge=1, le=5)  # 따라하기 쉬움
 
 
 class EntryCommentUpdateIn(BaseModel):
     text: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]] = None
     visual_rating: Optional[int] = Field(default=None, ge=1, le=5)
     value_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    ease_rating: Optional[int] = Field(default=None, ge=1, le=5)
 
 
 class EntryCommentOut(BaseModel):
@@ -267,7 +279,8 @@ class EntryCommentOut(BaseModel):
     text: str
     visual_rating: int
     value_rating: int
-    overall_rating: float  # 두 항목 평균, 소수 첫째 자리 반올림
+    ease_rating: int
+    overall_rating: float  # 세 항목 평균, 소수 첫째 자리 반올림
     created_at: dt.datetime
     is_edited: bool
     is_mine: bool
@@ -277,6 +290,7 @@ class RatingSummaryOut(BaseModel):
     average: Optional[float]  # overall_rating 평균
     visual_average: Optional[float]
     value_average: Optional[float]
+    ease_average: Optional[float]
     count: int
     distribution: dict  # overall_rating을 반올림한 {"5": n, "4": n, "3": n, "2": n, "1": n}
 

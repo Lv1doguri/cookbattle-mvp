@@ -1,5 +1,5 @@
-"""배틀 작품 평가: 댓글 + 비주얼/가성비 별점(각 1~5). 사진만 보고 투표하니 맛은 평가 항목에서 뺐어요.
-한 사람이 한 작품에 1개(수정 가능), 내 작품에는 불가."""
+"""배틀 작품 평가: 댓글 + 비주얼/가성비/따라하기 쉬움 별점(각 1~5). 사진만 보고 투표하니 맛은 평가
+항목에서 뺐어요. 한 사람이 한 작품에 1개(수정 가능), 내 작품에는 불가."""
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -25,13 +25,13 @@ def _get_entry(db: Session, entry_id: int) -> Entry:
 
 
 def _overall(c: EntryComment) -> float:
-    return round((c.visual_rating + c.value_rating) / 2, 1)
+    return round((c.visual_rating + c.value_rating + c.ease_rating) / 3, 1)
 
 
 def _out(c: EntryComment, viewer_id: int) -> EntryCommentOut:
     return EntryCommentOut(
         id=c.id, entry_id=c.entry_id, author=user_brief(c.user), text=c.text,
-        visual_rating=c.visual_rating, value_rating=c.value_rating,
+        visual_rating=c.visual_rating, value_rating=c.value_rating, ease_rating=c.ease_rating,
         overall_rating=_overall(c), created_at=c.created_at,
         is_edited=c.updated_at is not None, is_mine=c.user_id == viewer_id,
     )
@@ -48,6 +48,7 @@ def _summary(rows) -> RatingSummaryOut:
         average=avg_of(overalls),
         visual_average=avg_of([c.visual_rating for c in rows]),
         value_average=avg_of([c.value_rating for c in rows]),
+        ease_average=avg_of([c.ease_rating for c in rows]),
         count=len(rows),
         distribution=dist,
     )
@@ -65,7 +66,7 @@ def create_comment(
         raise ApiError(409, "already_reviewed", "이미 평가를 남겼어요. 기존 평가를 수정해주세요")
     comment = EntryComment(
         entry_id=entry_id, user_id=user.id, text=body.text,
-        visual_rating=body.visual_rating, value_rating=body.value_rating,
+        visual_rating=body.visual_rating, value_rating=body.value_rating, ease_rating=body.ease_rating,
         created_at=clock.utcnow(),
     )
     db.add(comment)
@@ -84,7 +85,7 @@ def list_comments(
     stmt = select(EntryComment).options(joinedload(EntryComment.user)).where(EntryComment.entry_id == entry_id)
     stmt = stmt.order_by(EntryComment.created_at.desc(), EntryComment.id.desc())
     rows = db.scalars(stmt).all()
-    # rating_high/low sort on the overall (visual+value)/2 average, which isn't a DB column
+    # rating_high/low sort on the overall (visual+value+ease)/3 average, which isn't a DB column
     if sort == "rating_high":
         rows = sorted(rows, key=_overall, reverse=True)
     elif sort == "rating_low":
@@ -114,6 +115,8 @@ def update_comment(
         c.visual_rating = body.visual_rating
     if body.value_rating is not None:
         c.value_rating = body.value_rating
+    if body.ease_rating is not None:
+        c.ease_rating = body.ease_rating
     c.updated_at = clock.utcnow()
     db.commit()
     return _out(c, user.id)

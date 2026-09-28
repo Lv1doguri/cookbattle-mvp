@@ -1,6 +1,6 @@
 import datetime as dt
 
-from app.content import ANGLE_BY_ID
+from app.content import ANGLE_BY_ID, RECIPE_COOK_POINTS
 from app.database import SessionLocal
 from app.enums import Tier
 from app.models import Exchange, LedgerEntry, User
@@ -642,7 +642,7 @@ def test_seeded_recipes_and_filters(client):
     assert card == {
         "id": card["id"], "name": "크림 파스타", "category": "pasta", "category_label": "파스타", "price": 4500,
         "minutes": 20, "difficulty": "intermediate", "difficulty_label": "중급", "win_label": "면 요리 대결 1등",
-        "photo_url": None, "saves": 0, "is_saved": False, "is_essential": False,
+        "photo_url": None, "saves": 0, "is_saved": False, "is_essential": False, "cooks": 0, "is_cooked": False,
     }
     assert names(essential="true") == (3, ["김치볶음밥", "비빔국수", "참치마요 덮밥"])  # "자취 필수" chip
     assert names(essential="true", time="le_10") == (1, ["참치마요 덮밥"])
@@ -700,6 +700,33 @@ def test_recipe_detail_save_recent_and_reviews(client):
     assert client.post(f"/recipes/{kimchi}/reviews", json={"text": "  "}, headers=a).status_code == 422
     assert client.post("/recipes/999/reviews", json={"text": "x"}, headers=a).status_code == 404
     assert client.get("/me", headers=a).json()["review_count"] == 2
+
+
+def test_recipe_cook_certification(client):
+    """기획서: 따라하기 레시피 완료 인증도 작은 점수 주기 (레시피당 1인 1회)."""
+    a, _ = signup(client, "a@test.com")
+    b, _ = signup(client, "b@test.com")
+    kimchi = client.get("/recipes", params={"q": "김치볶음밥"}, headers=a).json()["items"][0]["id"]
+
+    before = client.get("/me", headers=a).json()["progress"]["points"]
+    cooked = client.post(f"/recipes/{kimchi}/cook", headers=a)
+    assert cooked.status_code == 201 and cooked.json() == {"cooked": True, "cooks": 1, "points_awarded": RECIPE_COOK_POINTS}
+    after = client.get("/me", headers=a).json()["progress"]["points"]
+    assert after - before == RECIPE_COOK_POINTS
+
+    again = client.post(f"/recipes/{kimchi}/cook", headers=a)
+    assert again.status_code == 409 and again.json()["code"] == "already_cooked"
+    assert client.get("/me", headers=a).json()["progress"]["points"] == after  # no double-dipping
+
+    b_cooked = client.post(f"/recipes/{kimchi}/cook", headers=b)
+    assert b_cooked.status_code == 201 and b_cooked.json()["cooks"] == 2
+
+    detail = client.get(f"/recipes/{kimchi}", headers=a).json()
+    assert (detail["cooks"], detail["is_cooked"]) == (2, True)
+    card = client.get("/recipes", params={"q": "김치볶음밥"}, headers=b).json()["items"][0]
+    assert (card["cooks"], card["is_cooked"]) == (2, True)
+
+    assert client.post("/recipes/999/cook", headers=a).status_code == 404
 
 
 def test_winner_shares_recipe(client, freeze):
@@ -833,27 +860,31 @@ def test_entry_comments_and_ratings(client, freeze):
 
     assert client.get(f"/entries/{entry_id}/comments/mine", headers=b).json() is None
     own = client.post(
-        f"/entries/{entry_id}/comments", json={"text": "셀프", "visual_rating": 5, "value_rating": 5}, headers=a,
+        f"/entries/{entry_id}/comments",
+        json={"text": "셀프", "visual_rating": 5, "value_rating": 5, "ease_rating": 5}, headers=a,
     )
     assert own.status_code == 400 and own.json()["code"] == "own_entry"
 
-    # b: 비주얼/가성비 전부 5 -> overall 5.0. 맛은 사진만 보고 투표하니 평가 항목이 아님.
+    # b: 비주얼/가성비/따라하기 쉬움 전부 5 -> overall 5.0. 맛은 사진만 보고 투표하니 평가 항목이 아님.
     b_review = client.post(
-        f"/entries/{entry_id}/comments", json={"text": "맛있어 보여요", "visual_rating": 5, "value_rating": 5}, headers=b,
+        f"/entries/{entry_id}/comments",
+        json={"text": "맛있어 보여요", "visual_rating": 5, "value_rating": 5, "ease_rating": 5}, headers=b,
     )
     assert b_review.status_code == 201 and b_review.json()["overall_rating"] == 5.0
     dup = client.post(
-        f"/entries/{entry_id}/comments", json={"text": "또", "visual_rating": 4, "value_rating": 4}, headers=b,
+        f"/entries/{entry_id}/comments",
+        json={"text": "또", "visual_rating": 4, "value_rating": 4, "ease_rating": 4}, headers=b,
     )
     assert dup.status_code == 409 and dup.json()["code"] == "already_reviewed"
     # c: 전부 3 -> overall 3.0
     client.post(
-        f"/entries/{entry_id}/comments", json={"text": "간이 좀 셀 듯", "visual_rating": 3, "value_rating": 3}, headers=c,
+        f"/entries/{entry_id}/comments",
+        json={"text": "간이 좀 셀 듯", "visual_rating": 3, "value_rating": 3, "ease_rating": 3}, headers=c,
     )
 
     listed = client.get(f"/entries/{entry_id}/comments", headers=a).json()
     assert listed["summary"] == {
-        "average": 4.0, "visual_average": 4.0, "value_average": 4.0,
+        "average": 4.0, "visual_average": 4.0, "value_average": 4.0, "ease_average": 4.0,
         "count": 2, "distribution": {"5": 1, "4": 0, "3": 1, "2": 0, "1": 0},
     }
     assert [item["author"]["nickname"] for item in listed["items"]] == ["Somi", "Minsu"]  # latest first
@@ -864,7 +895,7 @@ def test_entry_comments_and_ratings(client, freeze):
     mine = client.get(f"/entries/{entry_id}/comments/mine", headers=b).json()
     edited = client.patch(f"/comments/{mine['id']}", json={"visual_rating": 4}, headers=b)
     assert edited.status_code == 200
-    assert (edited.json()["visual_rating"], edited.json()["overall_rating"], edited.json()["is_edited"]) == (4, 4.5, True)
+    assert (edited.json()["visual_rating"], edited.json()["overall_rating"], edited.json()["is_edited"]) == (4, 4.7, True)
     assert client.patch(f"/comments/{mine['id']}", json={"visual_rating": 1}, headers=c).status_code == 403
 
     items = client.get(f"/battles/{battle_id}/entries", headers=a).json()["items"]

@@ -14,6 +14,9 @@
 
 > **이후 업데이트**
 > - **구도 인증 AI (신규, 온라인 사진 도용 방지)**: 대결 참가엔 정면 사진 + 대결마다 무작위로 정해지는 구도 사진, 두 장이 필요해요(`BattleOut.required_angle*`, `POST /battles/{id}/entries`의 `angle_photo_id`). Claude Vision API(`services/vision.py`)가 같은 음식인지·요청한 구도가 맞는지 판정하고, 실패하면 400 `angle_mismatch`. `ANTHROPIC_API_KEY`가 없으면 로컬 개발용으로 판정을 건너뛰어요.
+> - **작품 평가에 "따라하기 쉬움" 추가 (기획서 반영)**: `docs/feature-plan-자취요리왕.md`가 원래 명시한 3항목(비주얼/가성비/따라하기 쉬움)에 맞춰 `ease_rating`을 추가했어요. `overall_rating`은 이제 세 항목의 평균.
+> - **"따라 만들었어요" 레시피 완료 인증 (신규, 기획서 반영)**: `POST /recipes/{id}/cook` — 레시피 하나당 1인 1회, `RECIPE_COOK_POINTS`(기본 5P) 지급. 이미 인증했으면 409 `already_cooked`. `RecipeCard`/`RecipeDetailOut`에 `cooks`/`is_cooked` 추가.
+> - **전자레인지 요리 대회 테마 추가 (기획서 반영)**: `content.THEME_BATTLES`에 "도구 제한(전자레인지만)" 테마를 추가했어요.
 > - **작품 평가가 투표 화면에 통합 (변경)**: 투표 직후 그 작품에 댓글 + 비주얼/가성비 별점을 바로 남길 수 있어요(프론트 Vote 화면). 원래 있던 `rating`(맛 포함 단일 별점) 대신 `visual_rating`/`value_rating`로 나뉘었고, 맛은 평가 항목에서 뺐어요(사진만 보고 투표하니 실제로 먹어보지 않고는 평가할 수 없어서). `overall_rating`은 두 항목의 평균.
 
 ## 공통 규칙
@@ -38,7 +41,7 @@
 | 06 | Battle | **`GET /battles/home?tier=`** 한 번으로 오늘의 대결 + 테마 대결 + 지난 대회 투표 카드까지 다 옴 (아래 참고) |
 | 07 | Onboarding (앱 사용법) | 서버 호출 없음 |
 | 08 | ProfileEdit | `PATCH /me` `{nickname?, email?, password?, tier?}` · [사진 변경] `PUT /me/avatar` (multipart, 필드명 `file`) |
-| 09 | RecipeDetail | `GET /recipes/{id}` · 저장 `POST/DELETE /recipes/{id}/save` · 댓글 `GET/POST /recipes/{id}/reviews` |
+| 09 | RecipeDetail | `GET /recipes/{id}` · 저장 `POST/DELETE /recipes/{id}/save` · [따라 만들었어요] `POST /recipes/{id}/cook`(1인 1회, +5P) · 댓글 `GET/POST /recipes/{id}/reviews` |
 | 10 | Menu | `GET /me`(프로필 요약, `saved_recipe_count`, `review_count`) · 저장한 레시피 `GET /me/saved-recipes` · 최근 본 레시피 `GET /me/recent-recipes` · 내가 쓴 후기 `GET /me/reviews` |
 | 11 | Offline | 프론트 화면. 요청이 네트워크 오류로 실패하면 이 화면으로 |
 | 12b | CookVerifyCamera (촬영) | 정면 사진 + `BattleOut.required_angle_instruction`이 안내하는 구도 사진, 두 장을 각각 `POST /photos` (multipart, 필드명 `file`) → `{photo_id, photo_url, captured_at, expires_at}`. 이전에 올라온 사진과 같은 사진(재압축·리사이즈 포함)이면 409 `photo_reused` |
@@ -94,9 +97,9 @@
 - `status`가 `void`면 참가자가 3명 미만이라 순위가 없어요(`podium`, `top10`은 빈 배열, 참가 포인트는 지급됨).
 - **참가자가 10명 미만이면 `rank_points`는 절반**만 지급돼요 (표시된 값은 이미 절반이 반영된 실제 지급액).
 
-**작품 평가 (댓글 + 비주얼/가성비 별점, 투표 화면에 통합)** — 투표하고 나면 그 작품에 바로 댓글 + 별점을 남길 수 있어요. 한 사람이 한 작품에 평가 1개(수정 가능), 내 작품엔 불가, 순위엔 영향 없음. **맛은 평가 항목이 아니에요** — 사진만 보고 투표하니 실제로 먹어보지 않고는 맛을 평가할 수 없어서 뺐어요. 비주얼/가성비 두 항목의 평균이 `overall_rating`.
-- `POST /entries/{id}/comments` `{ "text": "...", "visual_rating": 5, "value_rating": 4 }` → 400 `own_entry` / 409 `already_reviewed`
-- `GET /entries/{id}/comments?sort=latest|rating_high|rating_low` → `{ summary: {average, visual_average, value_average, count, distribution}, items: [...] }` (`rating_high`/`rating_low`는 `overall_rating` 기준)
+**작품 평가 (댓글 + 비주얼/가성비/따라하기 쉬움 별점, 투표 화면에 통합)** — 투표하고 나면 그 작품에 바로 댓글 + 별점을 남길 수 있어요. 기획서(`docs/feature-plan-자취요리왕.md`)가 명시한 3항목 그대로예요. 한 사람이 한 작품에 평가 1개(수정 가능), 내 작품엔 불가, 순위엔 영향 없음. **맛은 평가 항목이 아니에요** — 사진만 보고 투표하니 실제로 먹어보지 않고는 맛을 평가할 수 없어서 뺐어요. 세 항목의 평균이 `overall_rating`.
+- `POST /entries/{id}/comments` `{ "text": "...", "visual_rating": 5, "value_rating": 4, "ease_rating": 5 }` → 400 `own_entry` / 409 `already_reviewed`
+- `GET /entries/{id}/comments?sort=latest|rating_high|rating_low` → `{ summary: {average, visual_average, value_average, ease_average, count, distribution}, items: [...] }` (`rating_high`/`rating_low`는 `overall_rating` 기준)
 - `GET /entries/{id}/comments/mine` → 내 평가 또는 `null`
 - `PATCH /comments/{id}` `{ text?, visual_rating?, value_rating? }`, `DELETE /comments/{id}` — 본인 또는 관리자만
 
@@ -139,7 +142,7 @@
 
 ## 에러 코드 (자주 쓰는 것)
 
-`nickname_taken`(409) · `email_taken`(409) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409 — 재사용된 사진) · `photo_not_found`(404) · `same_photo_twice`(400, 신규 — 정면/구도 사진이 같음) · `angle_mismatch`(400, 신규 — 구도 인증 AI 판정 실패) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400) · `monthly_limit_reached`(400) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409) · `not_your_comment`(403) · `admin_only`(403)
+`nickname_taken`(409) · `email_taken`(409) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409 — 재사용된 사진) · `photo_not_found`(404) · `same_photo_twice`(400, 신규 — 정면/구도 사진이 같음) · `angle_mismatch`(400, 신규 — 구도 인증 AI 판정 실패) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400) · `monthly_limit_reached`(400) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409) · `already_cooked`(409, 신규 — 이미 "따라 만들었어요" 인증한 레시피) · `not_your_comment`(403) · `admin_only`(403)
 
 ## 디자인에서 정해지지 않아 백엔드가 가정한 것
 

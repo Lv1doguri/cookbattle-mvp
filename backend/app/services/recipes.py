@@ -4,7 +4,7 @@ from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from ..enums import CATEGORY_LABEL, TIER_LABEL, TOOL_LABEL, Budget, Category, CookTime, Tier, Tool
-from ..models import Ingredient, Recipe, RecipeSave, RecipeTool, User
+from ..models import Ingredient, Recipe, RecipeCook, RecipeSave, RecipeTool, User
 from ..schemas import IngredientOut, RecipeCard, RecipeDetailOut, RecipePage, StepOut, ToolOut
 from .accounts import user_brief
 from .images import image_url
@@ -19,6 +19,7 @@ def build_cards(db: Session, recipes: Sequence[Recipe], viewer: User) -> List[Re
         return []
     ids = [r.id for r in recipes]
     saved = set(db.scalars(select(RecipeSave.recipe_id).where(RecipeSave.user_id == viewer.id, RecipeSave.recipe_id.in_(ids))))
+    cooked = set(db.scalars(select(RecipeCook.recipe_id).where(RecipeCook.user_id == viewer.id, RecipeCook.recipe_id.in_(ids))))
     return [
         RecipeCard(
             id=r.id,
@@ -34,6 +35,8 @@ def build_cards(db: Session, recipes: Sequence[Recipe], viewer: User) -> List[Re
             saves=r.save_count,
             is_saved=r.id in saved,
             is_essential=r.is_essential,
+            cooks=r.cook_count,
+            is_cooked=r.id in cooked,
         )
         for r in recipes
     ]
