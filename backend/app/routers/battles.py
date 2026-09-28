@@ -46,7 +46,7 @@ from ..services.battles import (
     week_label,
 )
 from ..services.images import read_saved_image
-from ..services.points import grant_points
+from ..services.points import grant_points, revoke_points
 from ..services.recipes import build_detail, recipe_query
 from ..services import vision
 
@@ -348,6 +348,33 @@ def vote(entry_id: int, user: User = Depends(get_current_user), db: Session = De
     db.commit()
     db.refresh(entry)
     return VoteOut(entry_id=entry.id, vote_count=entry.vote_count, has_voted=True, points_awarded=VOTE_POINTS)
+
+
+@router.delete("/entries/{entry_id}/vote", response_model=VoteOut)
+def cancel_vote(entry_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """[투표 취소]. 투표 기간에만 가능하고, 받았던 포인트도 함께 회수돼요. 취소하면 다른 작품에 다시
+    투표할 수 있어요."""
+    now = clock.utcnow()
+    finalize_due_battles(db, now)
+    entry = db.get(Entry, entry_id)
+    if entry is None:
+        raise ApiError(404, "entry_not_found", "출품작을 찾을 수 없습니다")
+    battle = _get_battle(db, entry.battle_id)
+
+    my_vote = db.get(Vote, (battle.id, user.id))
+    if my_vote is None or my_vote.entry_id != entry.id:
+        raise ApiError(404, "vote_not_found", "이 작품에 투표한 기록이 없어요")
+    if phase(battle, now) == BattlePhase.cooking:
+        raise ApiError(400, "voting_not_started", "투표는 대회가 끝난 뒤부터 할 수 있어요")
+    if phase(battle, now) == BattlePhase.closed:
+        raise ApiError(400, "voting_closed", "투표가 마감돼서 취소할 수 없어요")
+
+    db.delete(my_vote)
+    db.execute(update(Entry).where(Entry.id == entry.id, Entry.vote_count > 0).values(vote_count=Entry.vote_count - 1))
+    revoke_points(db, user, VOTE_POINTS, reason="vote_cancel", ref_type="entry", ref_id=entry.id)
+    db.commit()
+    db.refresh(entry)
+    return VoteOut(entry_id=entry.id, vote_count=entry.vote_count, has_voted=False, points_awarded=-VOTE_POINTS)
 
 
 @router.get("/battles/{battle_id}/result", response_model=ResultOut)

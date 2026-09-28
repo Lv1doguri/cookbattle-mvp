@@ -17,6 +17,7 @@
 > - **작품 평가에 "따라하기 쉬움" 추가 (기획서 반영)**: `docs/feature-plan-자취요리왕.md`가 원래 명시한 3항목(비주얼/가성비/따라하기 쉬움)에 맞춰 `ease_rating`을 추가했어요. `overall_rating`은 이제 세 항목의 평균.
 > - **"따라 만들었어요" 레시피 완료 인증 (신규, 기획서 반영)**: `POST /recipes/{id}/cook` — 레시피 하나당 1인 1회, `RECIPE_COOK_POINTS`(기본 5P) 지급. 이미 인증했으면 409 `already_cooked`. `RecipeCard`/`RecipeDetailOut`에 `cooks`/`is_cooked` 추가.
 > - **전자레인지 요리 대회 테마 추가 (기획서 반영)**: `content.THEME_BATTLES`에 "도구 제한(전자레인지만)" 테마를 추가했어요.
+> - **투표 취소 (신규)**: `DELETE /entries/{entry_id}/vote` — 투표 기간에만, 받았던 +2P도 함께 회수. 취소하면 같은 대결의 다른 작품에 다시 투표할 수 있어요.
 > - **작품 평가가 투표 화면에 통합 (변경)**: 투표 직후 그 작품에 댓글 + 비주얼/가성비 별점을 바로 남길 수 있어요(프론트 Vote 화면). 원래 있던 `rating`(맛 포함 단일 별점) 대신 `visual_rating`/`value_rating`로 나뉘었고, 맛은 평가 항목에서 뺐어요(사진만 보고 투표하니 실제로 먹어보지 않고는 평가할 수 없어서). `overall_rating`은 두 항목의 평균.
 
 ## 공통 규칙
@@ -47,7 +48,7 @@
 | 12b | CookVerifyCamera (촬영) | 정면 사진 + `BattleOut.required_angle_instruction`이 안내하는 구도 사진, 두 장을 각각 `POST /photos` (multipart, 필드명 `file`) → `{photo_id, photo_url, captured_at, expires_at}`. 이전에 올라온 사진과 같은 사진(재압축·리사이즈 포함)이면 409 `photo_reused` |
 | 12 | CookVerify (요리 인증) | "촬영 완료" 미리보기는 두 `photo_url`. [다시 촬영]은 다시 `POST /photos` · [제출] `POST /battles/{battle_id}/entries` `{photo_id, angle_photo_id, dish_name, description}` (JSON) — `battle_id`는 오늘의 대결이면 `GET /battles/current` 응답의 `id`, 테마 대결이면 `GET /battles/current?kind=theme`의 `id` |
 | 13 | JoinDone | 제출 응답 그대로: `points_awarded`(참가 10P, **첫 대결이면 +30P 추가**), `entry`("치즈 스크램블 에그 by 나") · [대회 종료 시 알림 받기] `POST /entries/{entry_id}/notify` (다시 누르면 꺼져요) |
-| 14 | Vote | `GET /battles/{battle_id}/entries` · [투표하기 +2P] `POST /entries/{entry_id}/vote` (응답에 `points_awarded`) |
+| 14 | Vote | `GET /battles/{battle_id}/entries` · [투표하기 +2P] `POST /entries/{entry_id}/vote` (응답에 `points_awarded`) · [취소] `DELETE /entries/{entry_id}/vote` (받은 포인트도 회수, 투표 기간에만 가능) |
 | 15 | BattleResult | `GET /battles/{battle_id}/result` |
 | 16 | Shop | `GET /shop` |
 | 17 | ShopSheet | 필요/보유/교환 후 포인트는 `price_points`와 `points`로 계산 · [교환하기] `POST /shop/items/{id}/exchange` |
@@ -89,6 +90,7 @@
 6. 참가 완료 화면의 [대회 종료 시 알림 받기]는 `POST /entries/{entry_id}/notify`(토글). **MVP: 실제 알림 발송은 없고 원하는지만 저장돼요.**
 
 **투표** — **대회가 끝난 뒤 24시간 동안만** 할 수 있어요(요리 기간에는 아무도 못 해요). `GET /battles/{id}/entries` → 항목마다 `state`로 버튼을 정해요: `votable`=[투표하기 +2P] · `mine`=[내 작품] "투표 불가" · `voted`=내가 투표한 작품 · `vote_done`=이미 다른 작품에 투표 · `unavailable`=투표할 수 없는 상태(요리 기간·마감·다른 그룹). 이미 투표했는지는 `has_voted`. 투표하면 즉시 **+2P**(`VoteOut.points_awarded`). 각 항목에 `comment_count`/`rating_avg`/`rating_count`도 붙어서 "★4.5 (3)" 같은 표시가 가능해요.
+**투표 취소 (신규)** — `DELETE /entries/{entry_id}/vote`, 투표 기간에만 가능(404 `vote_not_found`면 그 작품에 투표한 적이 없는 것, 400 `voting_not_started`/`voting_closed`는 기간 밖). 받았던 +2P도 함께 회수되고(`VoteOut.points_awarded`가 `-2`로 옴), 취소 후에는 같은 대결의 다른 작품에 다시 투표할 수 있어요.
 
 **결과** `GET /battles/{id}/result` (투표 기간이 끝나기 전이면 409 `battle_not_finished`)
 - `podium`(시상대 1~3등), `top10`, `participants`.
@@ -142,7 +144,7 @@
 
 ## 에러 코드 (자주 쓰는 것)
 
-`nickname_taken`(409) · `email_taken`(409) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409 — 재사용된 사진) · `photo_not_found`(404) · `same_photo_twice`(400, 신규 — 정면/구도 사진이 같음) · `angle_mismatch`(400, 신규 — 구도 인증 AI 판정 실패) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400) · `monthly_limit_reached`(400) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409) · `already_cooked`(409, 신규 — 이미 "따라 만들었어요" 인증한 레시피) · `not_your_comment`(403) · `admin_only`(403)
+`nickname_taken`(409) · `email_taken`(409) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409 — 재사용된 사진) · `photo_not_found`(404) · `same_photo_twice`(400, 신규 — 정면/구도 사진이 같음) · `angle_mismatch`(400, 신규 — 구도 인증 AI 판정 실패) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400) · `monthly_limit_reached`(400) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409) · `already_cooked`(409, 신규 — 이미 "따라 만들었어요" 인증한 레시피) · `vote_not_found`(404, 신규 — 취소하려는데 그 작품에 투표한 적이 없음) · `not_your_comment`(403) · `admin_only`(403)
 
 ## 디자인에서 정해지지 않아 백엔드가 가정한 것
 

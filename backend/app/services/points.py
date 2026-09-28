@@ -76,6 +76,32 @@ def spend_points(
     return True
 
 
+def revoke_points(
+    db: Session,
+    user: User,
+    amount: int,
+    *,
+    reason: str,
+    ref_type: Optional[str] = None,
+    ref_id: Optional[int] = None,
+) -> None:
+    """Undoes a grant_points() call (e.g. an action the user cancelled): total_points (lifetime,
+    can lower the level) always drops by the full amount, but the spendable balance only drops by
+    whatever's still there - if some of it was already spent, that part just stays spent. Caller
+    commits."""
+    if amount <= 0:
+        raise ValueError("revoke_points needs a positive amount")
+    deduct = min(amount, user.points)
+    db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(points=User.points - deduct, total_points=User.total_points - amount)
+    )
+    db.add(LedgerEntry(user_id=user.id, points_delta=-deduct, reason=reason, ref_type=ref_type, ref_id=ref_id))
+    db.flush()
+    db.refresh(user)
+
+
 def expire_points(db: Session, user: User, now: dt.datetime) -> int:
     """Claw back spendable balance earned more than POINTS_EXPIRE_AFTER ago (lifetime total/level
     are untouched). Called lazily (on /me, /me/home, /shop) rather than by a scheduler. Idempotent:

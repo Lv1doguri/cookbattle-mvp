@@ -448,10 +448,28 @@ def test_voting_only_opens_after_cooking_ends(client, freeze):
     other_group = client.get(f"/battles/{battle_id}/entries", headers=outsider).json()
     assert other_group["can_vote"] is False and {e["state"] for e in other_group["items"]} == {"unavailable"}
 
+    # 투표 취소: 포인트가 회수되고, 다시 다른 작품에 투표할 수 있어요
+    cancelled = client.delete(f"/entries/{entry_ids[1]}/vote", headers=voter)
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {"entry_id": entry_ids[1], "vote_count": 0, "has_voted": False, "points_awarded": -2}
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 30  # 투표 포인트 회수, 가입 30P만 남음
+    after_cancel = client.get(f"/battles/{battle_id}/entries", headers=voter).json()
+    assert not after_cancel["has_voted"] and after_cancel["my_vote_entry_id"] is None
+    assert [e["state"] for e in after_cancel["items"]] == ["votable", "votable", "votable"]
+
+    no_vote = client.delete(f"/entries/{entry_ids[1]}/vote", headers=voter)
+    assert no_vote.status_code == 404 and no_vote.json()["code"] == "vote_not_found"
+
+    revoted = client.post(f"/entries/{entry_ids[2]}/vote", headers=voter)
+    assert revoted.status_code == 200 and revoted.json()["vote_count"] == 1
+    assert client.get("/me", headers=voter).json()["progress"]["points"] == 32
+
     freeze(kst_at(1, 1, 1))  # voting window (24h from kst_at(1, 0, 0)) has closed
     late, _ = signup(client, "late@test.com", nickname="late", tier="intermediate")
     closed = client.post(f"/entries/{entry_ids[0]}/vote", headers=late)
     assert closed.status_code == 400 and closed.json()["code"] == "voting_closed"
+    cancel_after_close = client.delete(f"/entries/{entry_ids[2]}/vote", headers=voter)
+    assert cancel_after_close.status_code == 400 and cancel_after_close.json()["code"] == "voting_closed"
 
 
 # ------------------------------------------------------------------ battles: results
