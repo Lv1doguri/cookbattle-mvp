@@ -41,10 +41,6 @@ MAX_EXCHANGES_PER_MONTH_PER_USER = 2
 # "이번 달 요리 N회" x this = "절약한 식비". 4,000 is what the design mock implies (8회 -> 32,000원).
 SAVING_PER_COOKING_KRW = 4000
 
-# ---- email verification (signup isn't final until the link is clicked) ----
-# Resend attempts share services.throttle's login rate limit (10 per 10 minutes per key).
-EMAIL_VERIFICATION_TTL = dt.timedelta(minutes=30)
-
 # ---- in-app camera photos -------------------------------------------------
 # The photo is uploaded the moment it's taken; the server stamps captured_at. It must be attached
 # to a battle entry within this window, and can be used only once (so old photos can't be recycled).

@@ -1,4 +1,5 @@
-"""배틀 작품 평가: 댓글 + 별점(1~5). 한 사람이 한 작품에 1개(수정 가능), 내 작품에는 불가."""
+"""배틀 작품 평가: 댓글 + 비주얼/가성비 별점(각 1~5). 사진만 보고 투표하니 맛은 평가 항목에서 뺐어요.
+한 사람이 한 작품에 1개(수정 가능), 내 작품에는 불가."""
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -23,18 +24,33 @@ def _get_entry(db: Session, entry_id: int) -> Entry:
     return entry
 
 
+def _overall(c: EntryComment) -> float:
+    return round((c.visual_rating + c.value_rating) / 2, 1)
+
+
 def _out(c: EntryComment, viewer_id: int) -> EntryCommentOut:
     return EntryCommentOut(
-        id=c.id, entry_id=c.entry_id, author=user_brief(c.user), text=c.text, rating=c.rating,
-        created_at=c.created_at, is_edited=c.updated_at is not None, is_mine=c.user_id == viewer_id,
+        id=c.id, entry_id=c.entry_id, author=user_brief(c.user), text=c.text,
+        visual_rating=c.visual_rating, value_rating=c.value_rating,
+        overall_rating=_overall(c), created_at=c.created_at,
+        is_edited=c.updated_at is not None, is_mine=c.user_id == viewer_id,
     )
 
 
 def _summary(rows) -> RatingSummaryOut:
-    ratings = [r.rating for r in rows]
-    dist = {str(n): ratings.count(n) for n in (5, 4, 3, 2, 1)}
-    avg = round(sum(ratings) / len(ratings), 1) if ratings else None
-    return RatingSummaryOut(average=avg, count=len(ratings), distribution=dist)
+    overalls = [_overall(c) for c in rows]
+    dist = {str(n): sum(1 for o in overalls if round(o) == n) for n in (5, 4, 3, 2, 1)}
+
+    def avg_of(vals):
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    return RatingSummaryOut(
+        average=avg_of(overalls),
+        visual_average=avg_of([c.visual_rating for c in rows]),
+        value_average=avg_of([c.value_rating for c in rows]),
+        count=len(rows),
+        distribution=dist,
+    )
 
 
 @router.post("/entries/{entry_id}/comments", response_model=EntryCommentOut, status_code=201)
@@ -47,7 +63,11 @@ def create_comment(
     existing = db.scalar(select(EntryComment).where(EntryComment.entry_id == entry_id, EntryComment.user_id == user.id))
     if existing is not None:
         raise ApiError(409, "already_reviewed", "이미 평가를 남겼어요. 기존 평가를 수정해주세요")
-    comment = EntryComment(entry_id=entry_id, user_id=user.id, text=body.text, rating=body.rating, created_at=clock.utcnow())
+    comment = EntryComment(
+        entry_id=entry_id, user_id=user.id, text=body.text,
+        visual_rating=body.visual_rating, value_rating=body.value_rating,
+        created_at=clock.utcnow(),
+    )
     db.add(comment)
     db.commit()
     return _out(comment, user.id)
@@ -62,13 +82,13 @@ def list_comments(
 ):
     _get_entry(db, entry_id)
     stmt = select(EntryComment).options(joinedload(EntryComment.user)).where(EntryComment.entry_id == entry_id)
-    if sort == "rating_high":
-        stmt = stmt.order_by(EntryComment.rating.desc(), EntryComment.created_at.desc())
-    elif sort == "rating_low":
-        stmt = stmt.order_by(EntryComment.rating.asc(), EntryComment.created_at.desc())
-    else:
-        stmt = stmt.order_by(EntryComment.created_at.desc(), EntryComment.id.desc())
+    stmt = stmt.order_by(EntryComment.created_at.desc(), EntryComment.id.desc())
     rows = db.scalars(stmt).all()
+    # rating_high/low sort on the overall (visual+value)/2 average, which isn't a DB column
+    if sort == "rating_high":
+        rows = sorted(rows, key=_overall, reverse=True)
+    elif sort == "rating_low":
+        rows = sorted(rows, key=_overall)
     return EntryCommentPage(summary=_summary(rows), items=[_out(c, user.id) for c in rows])
 
 
@@ -90,8 +110,10 @@ def update_comment(
         raise ApiError(403, "not_your_comment", "본인 평가만 수정할 수 있어요")
     if body.text is not None:
         c.text = body.text
-    if body.rating is not None:
-        c.rating = body.rating
+    if body.visual_rating is not None:
+        c.visual_rating = body.visual_rating
+    if body.value_rating is not None:
+        c.value_rating = body.value_rating
     c.updated_at = clock.utcnow()
     db.commit()
     return _out(c, user.id)

@@ -86,23 +86,6 @@ class User(Base):
 Index("uq_users_nickname_lower", func.lower(User.nickname), unique=True)
 
 
-class PendingSignup(Base):
-    """A signup that hasn't clicked its verification link yet. No login is possible from this row —
-    verify_email() consumes it and creates the real User. Expired/superseded rows are swept lazily
-    whenever a new signup comes in for the same email or nickname."""
-
-    __tablename__ = "pending_signups"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    nickname: Mapped[str] = mapped_column(String(16))
-    password_hash: Mapped[str] = mapped_column(String(100))
-    tier: Mapped[Tier] = mapped_column(_enum(Tier))
-    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
-    expires_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
-
-
 class Photo(Base):
     """A photo taken with the in-app camera. captured_at is stamped by the server at upload."""
 
@@ -186,7 +169,9 @@ class Entry(Base):
 
 
 class EntryComment(Base):
-    """A comment + 1-5 star rating on a battle entry (배틀 작품 평가). One per user per entry."""
+    """A comment + 비주얼/가성비 (visual/value) 1-5 star ratings on a battle entry, left when voting
+    for it (배틀 작품 평가). No taste rating - voters only ever see a photo, never taste the dish.
+    One per user per entry."""
 
     __tablename__ = "entry_comments"
     __table_args__ = (UniqueConstraint("entry_id", "user_id", name="uq_one_comment_per_entry"),)
@@ -195,7 +180,8 @@ class EntryComment(Base):
     entry_id: Mapped[int] = mapped_column(ForeignKey("entries.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     text: Mapped[str] = mapped_column(String(500))
-    rating: Mapped[int] = mapped_column(Integer)  # 1-5
+    visual_rating: Mapped[int] = mapped_column(Integer)  # 비주얼, 1-5
+    value_rating: Mapped[int] = mapped_column(Integer)  # 가성비, 1-5
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=_now)
     updated_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime, nullable=True)
 

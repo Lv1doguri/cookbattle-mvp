@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from .. import clock
 from ..enums import TIER_LABEL
-from ..models import PendingSignup, RecipeSave, Review, User
+from ..models import RecipeSave, Review, User
 from ..schemas import MeOut, UserBrief
 from .images import image_url
 from .points import expire_points, progress_for
@@ -21,18 +21,11 @@ def user_brief(u: User) -> UserBrief:
 
 
 def nickname_taken(db: Session, nickname: str, exclude_user_id: Optional[int] = None) -> bool:
-    """Also counts an unverified signup that's still within its verification window, so two people
-    can't both believe they've claimed the same nickname."""
     n = nickname.strip().lower()
     stmt = select(User.id).where(func.lower(User.nickname) == n)
     if exclude_user_id is not None:
         stmt = stmt.where(User.id != exclude_user_id)
-    if db.scalar(stmt) is not None:
-        return True
-    pending = select(PendingSignup.id).where(
-        func.lower(PendingSignup.nickname) == n, PendingSignup.expires_at > clock.utcnow()
-    )
-    return db.scalar(pending) is not None
+    return db.scalar(stmt) is not None
 
 
 def apply_pending_tier(db: Session, user: User, now: dt.datetime) -> None:

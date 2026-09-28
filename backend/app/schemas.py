@@ -28,21 +28,6 @@ class SignupIn(BaseModel):
         return _check_password_bytes(v)
 
 
-class SignupPendingOut(BaseModel):
-    """[가입하기]의 응답. 계정은 아직 안 만들어졌어요 — 메일의 링크를 눌러야 완료돼요."""
-
-    message: str
-    email: str
-
-
-class VerifyEmailIn(BaseModel):
-    token: str
-
-
-class ResendVerificationIn(BaseModel):
-    email: EmailStr
-
-
 class LoginIn(BaseModel):
     # 이메일을 넣으세요. 이메일 없이 가입한 계정은 같은 칸에 닉네임을 넣으면 돼요('@'가 있으면 이메일로 봐요).
     email: str = Field(min_length=1, max_length=255)
@@ -265,12 +250,14 @@ class EntryOut(BaseModel):
 
 class EntryCommentCreateIn(BaseModel):
     text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
-    rating: int = Field(ge=1, le=5)
+    visual_rating: int = Field(ge=1, le=5)  # 비주얼
+    value_rating: int = Field(ge=1, le=5)  # 가성비
 
 
 class EntryCommentUpdateIn(BaseModel):
     text: Optional[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]] = None
-    rating: Optional[int] = Field(default=None, ge=1, le=5)
+    visual_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    value_rating: Optional[int] = Field(default=None, ge=1, le=5)
 
 
 class EntryCommentOut(BaseModel):
@@ -278,16 +265,20 @@ class EntryCommentOut(BaseModel):
     entry_id: int
     author: UserBrief
     text: str
-    rating: int
+    visual_rating: int
+    value_rating: int
+    overall_rating: float  # 두 항목 평균, 소수 첫째 자리 반올림
     created_at: dt.datetime
     is_edited: bool
     is_mine: bool
 
 
 class RatingSummaryOut(BaseModel):
-    average: Optional[float]
+    average: Optional[float]  # overall_rating 평균
+    visual_average: Optional[float]
+    value_average: Optional[float]
     count: int
-    distribution: dict  # {"5": n, "4": n, "3": n, "2": n, "1": n}
+    distribution: dict  # overall_rating을 반올림한 {"5": n, "4": n, "3": n, "2": n, "1": n}
 
 
 class EntryCommentPage(BaseModel):

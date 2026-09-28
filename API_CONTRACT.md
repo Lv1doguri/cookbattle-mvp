@@ -13,8 +13,8 @@
 > - 테스트: pytest 29개(기존) + 신규 기능 7개 = **36개** 전부 통과. `cd backend && pytest`
 
 > **이후 업데이트**
-> - **이메일 인증 회원가입 (신규)**: `POST /auth/signup`은 이제 계정을 바로 만들지 않고 202 `SignupPendingOut`만 반환, 입력한 이메일로 인증 메일을 보내요(`PendingSignup`, TTL 30분). 링크의 `POST /auth/verify-email`을 눌러야 실제 계정이 생기고 로그인돼요. `POST /auth/resend-verification`로 재전송. `SMTP_HOST`가 `.env`에 없으면 실제 메일 대신 서버 로그에 링크만 남겨요(로컬 개발용).
 > - **구도 인증 AI (신규, 온라인 사진 도용 방지)**: 대결 참가엔 정면 사진 + 대결마다 무작위로 정해지는 구도 사진, 두 장이 필요해요(`BattleOut.required_angle*`, `POST /battles/{id}/entries`의 `angle_photo_id`). Claude Vision API(`services/vision.py`)가 같은 음식인지·요청한 구도가 맞는지 판정하고, 실패하면 400 `angle_mismatch`. `ANTHROPIC_API_KEY`가 없으면 로컬 개발용으로 판정을 건너뛰어요.
+> - **작품 평가가 투표 화면에 통합 (변경)**: 투표 직후 그 작품에 댓글 + 비주얼/가성비 별점을 바로 남길 수 있어요(프론트 Vote 화면). 원래 있던 `rating`(맛 포함 단일 별점) 대신 `visual_rating`/`value_rating`로 나뉘었고, 맛은 평가 항목에서 뺐어요(사진만 보고 투표하니 실제로 먹어보지 않고는 평가할 수 없어서). `overall_rating`은 두 항목의 평균.
 
 ## 공통 규칙
 
@@ -49,7 +49,7 @@
 | 16 | Shop | `GET /shop` |
 | 17 | ShopSheet | 필요/보유/교환 후 포인트는 `price_points`와 `points`로 계산 · [교환하기] `POST /shop/items/{id}/exchange` |
 | 18 | ShopDone | 위 응답 그대로: `item_name`, `points`(남은 포인트) |
-| — | 작품 평가 (댓글+별점, 신규) | `POST/GET /entries/{id}/comments`, `GET /entries/{id}/comments/mine`, `PATCH/DELETE /comments/{id}` — 이 디자인엔 전용 화면이 없어서 필요하면 프론트에서 화면을 만들어야 해요 |
+| 14 | Vote (작품 평가) | 투표 직후 그 작품에 댓글 + 비주얼/가성비 별점: `POST /entries/{id}/comments`. 조회 `GET /entries/{id}/comments`, `GET /entries/{id}/comments/mine`, 수정/삭제 `PATCH/DELETE /comments/{id}` |
 
 ## Google 로그인 (`POST /auth/google`)
 
@@ -94,11 +94,11 @@
 - `status`가 `void`면 참가자가 3명 미만이라 순위가 없어요(`podium`, `top10`은 빈 배열, 참가 포인트는 지급됨).
 - **참가자가 10명 미만이면 `rank_points`는 절반**만 지급돼요 (표시된 값은 이미 절반이 반영된 실제 지급액).
 
-**작품 평가 (댓글 + 별점, 신규)** — 이 디자인에 화면은 없지만 API는 있어요. 한 사람이 한 작품에 평가 1개(수정 가능), 내 작품엔 불가, 순위엔 영향 없음.
-- `POST /entries/{id}/comments` `{ "text": "...", "rating": 5 }` → 400 `own_entry` / 409 `already_reviewed`
-- `GET /entries/{id}/comments?sort=latest|rating_high|rating_low` → `{ summary: {average, count, distribution}, items: [...] }`
+**작품 평가 (댓글 + 비주얼/가성비 별점, 투표 화면에 통합)** — 투표하고 나면 그 작품에 바로 댓글 + 별점을 남길 수 있어요. 한 사람이 한 작품에 평가 1개(수정 가능), 내 작품엔 불가, 순위엔 영향 없음. **맛은 평가 항목이 아니에요** — 사진만 보고 투표하니 실제로 먹어보지 않고는 맛을 평가할 수 없어서 뺐어요. 비주얼/가성비 두 항목의 평균이 `overall_rating`.
+- `POST /entries/{id}/comments` `{ "text": "...", "visual_rating": 5, "value_rating": 4 }` → 400 `own_entry` / 409 `already_reviewed`
+- `GET /entries/{id}/comments?sort=latest|rating_high|rating_low` → `{ summary: {average, visual_average, value_average, count, distribution}, items: [...] }` (`rating_high`/`rating_low`는 `overall_rating` 기준)
 - `GET /entries/{id}/comments/mine` → 내 평가 또는 `null`
-- `PATCH /comments/{id}` `{ text?, rating? }`, `DELETE /comments/{id}` — 본인 또는 관리자만
+- `PATCH /comments/{id}` `{ text?, visual_rating?, value_rating? }`, `DELETE /comments/{id}` — 본인 또는 관리자만
 
 **Shop** `GET /shop` → `points`, `level`, `items[].state`: `available`=[교환] · `insufficient_points`=비활성 "N P 더 필요해요"(`points_short`) · `locked`=비활성 "Lv.`required_level`부터 교환 가능" · `sold_out_this_month`=비활성 "이번 달 물량이 다 나갔어요" · `monthly_limit_reached`=비활성 "한 달에 2번까지 교환할 수 있어요".
 
@@ -139,7 +139,7 @@
 
 ## 에러 코드 (자주 쓰는 것)
 
-`nickname_taken`(409) · `email_taken`(409) · `verification_already_sent`(409, 신규 — 인증 메일 재전송 전 이미 대기 중) · `invalid_or_expired_token`(400, 신규 — 인증 링크 만료/오류) · `email_not_verified`(403, 신규 — 로그인 시도했지만 아직 인증 안 됨) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409 — 재사용된 사진) · `photo_not_found`(404) · `same_photo_twice`(400, 신규 — 정면/구도 사진이 같음) · `angle_mismatch`(400, 신규 — 구도 인증 AI 판정 실패) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400) · `monthly_limit_reached`(400) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409) · `not_your_comment`(403) · `admin_only`(403)
+`nickname_taken`(409) · `email_taken`(409) · `invalid_credentials`(401) · `too_many_attempts`(429) · `google_not_configured`(500) · `invalid_google_token`(401) · `unsupported_image`(400) · `photo_expired`(400) · `photo_already_used`(409) · `photo_reused`(409 — 재사용된 사진) · `photo_not_found`(404) · `same_photo_twice`(400, 신규 — 정면/구도 사진이 같음) · `angle_mismatch`(400, 신규 — 구도 인증 AI 판정 실패) · `wrong_group`(403) · `battle_closed`(400) · `already_entered`(409) · `voting_not_started`(400) · `voting_closed`(400) · `already_voted`(409) · `own_entry`(400) · `battle_not_finished`(409) · `insufficient_points`(400) · `level_locked`(403) · `sold_out_this_month`(400) · `monthly_limit_reached`(400) · `not_winner`(403) · `already_shared`(409) · `already_reviewed`(409) · `not_your_comment`(403) · `admin_only`(403)
 
 ## 디자인에서 정해지지 않아 백엔드가 가정한 것
 
@@ -157,5 +157,5 @@
 10. **샘플 레시피 8개**를 공식 계정 "요리왕" 이름으로 넣어뒀어요(처음엔 1등 레시피가 하나도 없어서 레시피 탭이 비니까요).
 11. **없는 것**: 실제 알림 발송(구독 여부만 저장), 알림 설정, "재료로 찾기"(링크만 있고 화면 없음), 친구 기능. 조리 시간 30분 초과~1시간 미만은 필터 칸이 없어서 어디에도 안 잡혀요.
 12. **대결 주제 문구**는 계란 요리(daily) 외에는 임시로 썼어요(`backend/app/content.py`의 `BATTLE_THEMES`, `THEME_BATTLES`).
-13. **작품 평가(댓글+별점)에 전용 화면이 없어요.** API만 만들어뒀으니 필요하면 화면을 추가해야 해요.
+13. **작품 평가(댓글+별점)는 투표 화면(14)에 통합돼 있어요.** 맛은 평가 항목이 아니에요(사진만 보고 투표라서).
 14. **사진 재사용 탐지(dHash)의 판정 거리**는 `backend/app/content.py`의 `PHOTO_DUP_HAMMING_DISTANCE`(기본 10/64)에서 조정할 수 있어요.

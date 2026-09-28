@@ -231,10 +231,10 @@ def entry_state(entry: Entry, viewer_id: int, my_vote_entry_id: Optional[int], c
     return "votable" if can_vote else "unavailable"
 
 
-def _rating_stats(ratings: Sequence[int]) -> tuple:
-    if not ratings:
+def _rating_stats(overall_ratings: Sequence[float]) -> tuple:
+    if not overall_ratings:
         return None, 0
-    return round(sum(ratings) / len(ratings), 1), len(ratings)
+    return round(sum(overall_ratings) / len(overall_ratings), 1), len(overall_ratings)
 
 
 def entry_out(entry: Entry, state: str, ratings: Sequence[int] = ()) -> EntryOut:
@@ -265,12 +265,12 @@ def entry_outs(
     ratings_by_entry: dict = {}
     if entries:
         rows = db.execute(
-            select(EntryComment.entry_id, EntryComment.rating).where(
+            select(EntryComment.entry_id, EntryComment.visual_rating, EntryComment.value_rating).where(
                 EntryComment.entry_id.in_([e.id for e in entries])
             )
         )
-        for entry_id, rating in rows:
-            ratings_by_entry.setdefault(entry_id, []).append(rating)
+        for entry_id, visual, value in rows:
+            ratings_by_entry.setdefault(entry_id, []).append((visual + value) / 2)
     return [
         entry_out(e, entry_state(e, viewer_id, my_vote_entry_id, can_vote), ratings_by_entry.get(e.id, []))
         for e in entries

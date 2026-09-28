@@ -1,6 +1,6 @@
 import datetime as dt
 
-from app.content import ANGLE_BY_ID, EMAIL_VERIFICATION_TTL, SIGNUP_BONUS
+from app.content import ANGLE_BY_ID
 from app.database import SessionLocal
 from app.enums import Tier
 from app.models import Exchange, LedgerEntry, User
@@ -18,7 +18,6 @@ from .conftest import (
     group,
     join,
     kst_at,
-    pending_token,
     set_user,
     signup,
 )
@@ -57,16 +56,11 @@ def run_battle(client, freeze, votes_for=(2, 2, 1, 0)):
 
 # ------------------------------------------------------------------ auth
 def test_signup_login_and_me(client):
-    pending = client.post(
+    r = client.post(
         "/auth/signup",
         json={"email": "Yuri@Test.com", "nickname": "Yuri", "password": PASSWORD, "tier": "intermediate"},
     )
-    assert pending.status_code == 202 and pending.json()["email"] == "yuri@test.com"
-    not_yet = client.post("/auth/login", json={"email": "yuri@test.com", "password": PASSWORD})
-    assert not_yet.status_code == 403 and not_yet.json()["code"] == "email_not_verified"
-
-    r = client.post("/auth/verify-email", json={"token": pending_token("yuri@test.com")})
-    assert r.status_code == 200
+    assert r.status_code == 201
     me = r.json()["user"]
     assert (me["email"], me["nickname"], me["tier"], me["tier_label"]) == ("yuri@test.com", "Yuri", "intermediate", "중급")
     assert me["progress"] == {
@@ -226,83 +220,6 @@ def test_successful_login_clears_the_failure_count(client):
     for _ in range(9):
         assert client.post("/auth/login", json={"email": "Yuri", "password": "wrong-password"}).status_code == 401
     assert client.post("/auth/login", json={"email": "Yuri", "password": PASSWORD}).status_code == 200
-
-
-def test_email_verification_flow(client, freeze):
-    freeze(kst_at(0, 2, 12))
-    pending = client.post(
-        "/auth/signup", json={"email": "a@test.com", "nickname": "새싹요리사", "password": PASSWORD, "tier": "beginner"}
-    )
-    assert pending.status_code == 202
-    assert pending.json() == {
-        "message": "인증 메일을 보냈어요. 메일함을 확인하고 링크를 눌러 가입을 완료해주세요",
-        "email": "a@test.com",
-    }
-
-    not_verified = client.post("/auth/login", json={"email": "a@test.com", "password": PASSWORD})
-    assert not_verified.status_code == 403 and not_verified.json()["code"] == "email_not_verified"
-
-    # can't start a second signup for the same email while one is still pending
-    again = client.post(
-        "/auth/signup", json={"email": "a@test.com", "nickname": "다른닉", "password": PASSWORD, "tier": "beginner"}
-    )
-    assert again.status_code == 409 and again.json()["code"] == "verification_already_sent"
-
-    # the pending nickname is reserved too, so nobody else can grab it in the meantime
-    dup_nick = client.post(
-        "/auth/signup", json={"email": "b@test.com", "nickname": "새싹요리사", "password": PASSWORD, "tier": "beginner"}
-    )
-    assert dup_nick.status_code == 409 and dup_nick.json()["code"] == "nickname_taken"
-
-    bad_token = client.post("/auth/verify-email", json={"token": "not-a-real-token"})
-    assert bad_token.status_code == 400 and bad_token.json()["code"] == "invalid_or_expired_token"
-
-    old_token = pending_token("a@test.com")
-    resent = client.post("/auth/resend-verification", json={"email": "A@test.com"})
-    assert resent.status_code == 200 and resent.json()["email"] == "a@test.com"
-    assert client.post("/auth/verify-email", json={"token": old_token}).status_code == 400  # replaced by the resend
-
-    new_token = pending_token("a@test.com")
-    assert new_token != old_token
-    verified = client.post("/auth/verify-email", json={"token": new_token})
-    assert verified.status_code == 200
-    me = verified.json()["user"]
-    assert me["email"] == "a@test.com" and me["nickname"] == "새싹요리사"
-    assert me["progress"]["total_points"] == SIGNUP_BONUS  # 가입 보너스는 인증 완료 시점에 지급됨
-
-    # the account is real now: the email/nickname are taken for good, and login works
-    dup_after = client.post(
-        "/auth/signup", json={"email": "a@test.com", "nickname": "새이름", "password": PASSWORD, "tier": "beginner"}
-    )
-    assert dup_after.status_code == 409 and dup_after.json()["code"] == "email_taken"
-    assert client.post("/auth/login", json={"email": "a@test.com", "password": PASSWORD}).status_code == 200
-
-
-def test_verify_email_rejects_expired_token(client, freeze):
-    freeze(kst_at(0, 2, 12))
-    client.post("/auth/signup", json={"email": "a@test.com", "nickname": "느림보", "password": PASSWORD, "tier": "beginner"})
-    token = pending_token("a@test.com")
-
-    freeze(kst_at(0, 2, 12) + EMAIL_VERIFICATION_TTL + dt.timedelta(seconds=1))
-    expired = client.post("/auth/verify-email", json={"token": token})
-    assert expired.status_code == 400 and expired.json()["code"] == "invalid_or_expired_token"
-
-    # once it's expired, resend can't revive it (it's swept away as stale) — signing up again can
-    resend = client.post("/auth/resend-verification", json={"email": "a@test.com"})
-    assert resend.status_code == 200
-    assert client.post("/auth/verify-email", json={"token": token}).status_code == 400
-
-    retry = client.post(
-        "/auth/signup", json={"email": "a@test.com", "nickname": "느림보", "password": PASSWORD, "tier": "beginner"}
-    )
-    assert retry.status_code == 202
-    fresh = client.post("/auth/verify-email", json={"token": pending_token("a@test.com")})
-    assert fresh.status_code == 200
-
-
-def test_resend_verification_for_unknown_email_does_not_leak(client):
-    r = client.post("/auth/resend-verification", json={"email": "nobody@test.com"})
-    assert r.status_code == 200 and r.json()["email"] == "nobody@test.com"  # same shape either way
 
 
 # ------------------------------------------------------------------ camera photos
@@ -915,25 +832,40 @@ def test_entry_comments_and_ratings(client, freeze):
     entry_id = join(client, a, battle_id).json()["entry"]["id"]
 
     assert client.get(f"/entries/{entry_id}/comments/mine", headers=b).json() is None
-    own = client.post(f"/entries/{entry_id}/comments", json={"text": "셀프", "rating": 5}, headers=a)
+    own = client.post(
+        f"/entries/{entry_id}/comments", json={"text": "셀프", "visual_rating": 5, "value_rating": 5}, headers=a,
+    )
     assert own.status_code == 400 and own.json()["code"] == "own_entry"
 
-    assert client.post(f"/entries/{entry_id}/comments", json={"text": "맛있어 보여요", "rating": 5}, headers=b).status_code == 201
-    dup = client.post(f"/entries/{entry_id}/comments", json={"text": "또", "rating": 4}, headers=b)
+    # b: 비주얼/가성비 전부 5 -> overall 5.0. 맛은 사진만 보고 투표하니 평가 항목이 아님.
+    b_review = client.post(
+        f"/entries/{entry_id}/comments", json={"text": "맛있어 보여요", "visual_rating": 5, "value_rating": 5}, headers=b,
+    )
+    assert b_review.status_code == 201 and b_review.json()["overall_rating"] == 5.0
+    dup = client.post(
+        f"/entries/{entry_id}/comments", json={"text": "또", "visual_rating": 4, "value_rating": 4}, headers=b,
+    )
     assert dup.status_code == 409 and dup.json()["code"] == "already_reviewed"
-    client.post(f"/entries/{entry_id}/comments", json={"text": "간이 좀 셀 듯", "rating": 3}, headers=c)
+    # c: 전부 3 -> overall 3.0
+    client.post(
+        f"/entries/{entry_id}/comments", json={"text": "간이 좀 셀 듯", "visual_rating": 3, "value_rating": 3}, headers=c,
+    )
 
     listed = client.get(f"/entries/{entry_id}/comments", headers=a).json()
-    assert listed["summary"] == {"average": 4.0, "count": 2, "distribution": {"5": 1, "4": 0, "3": 1, "2": 0, "1": 0}}
+    assert listed["summary"] == {
+        "average": 4.0, "visual_average": 4.0, "value_average": 4.0,
+        "count": 2, "distribution": {"5": 1, "4": 0, "3": 1, "2": 0, "1": 0},
+    }
     assert [item["author"]["nickname"] for item in listed["items"]] == ["Somi", "Minsu"]  # latest first
 
     low_first = client.get(f"/entries/{entry_id}/comments", params={"sort": "rating_low"}, headers=a).json()
-    assert [item["rating"] for item in low_first["items"]] == [3, 5]
+    assert [item["overall_rating"] for item in low_first["items"]] == [3.0, 5.0]
 
     mine = client.get(f"/entries/{entry_id}/comments/mine", headers=b).json()
-    edited = client.patch(f"/comments/{mine['id']}", json={"rating": 4}, headers=b)
-    assert edited.status_code == 200 and edited.json()["rating"] == 4 and edited.json()["is_edited"]
-    assert client.patch(f"/comments/{mine['id']}", json={"rating": 1}, headers=c).status_code == 403
+    edited = client.patch(f"/comments/{mine['id']}", json={"visual_rating": 4}, headers=b)
+    assert edited.status_code == 200
+    assert (edited.json()["visual_rating"], edited.json()["overall_rating"], edited.json()["is_edited"]) == (4, 4.5, True)
+    assert client.patch(f"/comments/{mine['id']}", json={"visual_rating": 1}, headers=c).status_code == 403
 
     items = client.get(f"/battles/{battle_id}/entries", headers=a).json()["items"]
     mine_entry = next(i for i in items if i["id"] == entry_id)
