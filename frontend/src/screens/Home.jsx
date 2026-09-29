@@ -7,6 +7,7 @@ import { Avatar, Badge, Button, ProgressBar } from '../components/ui';
 import { skillLabel, won } from '../data/mock';
 import { useApp } from '../state/AppContext';
 import useCountdown from '../hooks/useCountdown';
+import logo from '../assets/logo.png';
 
 // 오늘의 대결 주제(테마)별 홈 배너 문구. 테마 자체는 실제 서버 값이고, 이 문구는 순수 카피예요.
 const THEME_HOOK = {
@@ -71,7 +72,7 @@ export default function Home() {
   return (
     <Screen>
       <Header className="home-hdr">
-        <TopBar title="요리왕" brand>
+        <TopBar title="자취 요리왕" brand logo={logo}>
           <IconButton label="알림" to="/home" dot><Icon name="bell" size={22} /></IconButton>
         </TopBar>
 

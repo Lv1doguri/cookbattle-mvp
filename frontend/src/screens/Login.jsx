@@ -48,10 +48,10 @@ export default function Login() {
       <div className="body">
         <div className="login-brand">
           <span className="login-brand__logo-wrap">
-            <img src={logo} alt="요리왕 로고" className="login-brand__logo" />
+            <img src={logo} alt="자취 요리왕 로고" className="login-brand__logo" />
           </span>
           <div className="login-brand__title">
-            <h1 className="login-brand__name">요리왕</h1>
+            <h1 className="login-brand__name">자취 요리왕</h1>
             <span className="badge badge--beta">BETA</span>
           </div>
           <p className="login-brand__tag">요리하고, 공유하고, 대결하다</p>

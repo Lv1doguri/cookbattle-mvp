@@ -352,6 +352,12 @@ def seed_demo(db: Session) -> None:
     db.add_all(RecipeSave(user_id=demo.id, recipe_id=rid) for rid in (kimchi.id, cream_pasta.id, jjapaguri.id))
     db.commit()
 
+    # 7일치 이력만으론 상점을 데모하기엔 포인트가 너무 적어요(한 달치로 늘리면 자연스럽게 이 정도는
+    # 쌓여요). "몇 주 더 이렇게 활동했다"는 셈 치고 시연용으로 살짝 얹어줘요 — 레벨업/구매 흐름을
+    # 실제로 눌러볼 수 있게.
+    grant_points(db, demo, 375, reason="demo_catchup", ref_type=None, ref_id=None)
+    db.commit()
+
     print(
         f"Seeded demo account '{DEMO_USERNAME}' / '{DEMO_PASSWORD}' — "
         f"Lv.{level_for(demo.total_points)}, {demo.points}P (누적 {demo.total_points}P), {demo.streak_weeks}일 연속 참가."

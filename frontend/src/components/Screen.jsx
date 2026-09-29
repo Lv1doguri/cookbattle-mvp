@@ -20,7 +20,7 @@ export function Header({ className = '', children, ...rest }) {
 }
 
 // Top bar. Large brand-colored title for tab roots, small title + back button for sub-pages.
-export function TopBar({ title, back, brand = false, children }) {
+export function TopBar({ title, back, brand = false, logo, children }) {
   const navigate = useNavigate();
   return (
     <div className={`top ${back ? 'top--sub' : ''}`}>
@@ -29,7 +29,12 @@ export function TopBar({ title, back, brand = false, children }) {
           <Icon name="back" strokeWidth={2.2} />
         </IconButton>
       )}
-      {title && <h1 className={back ? 'ttl-s' : `ttl ${brand ? 'ttl--brand' : ''}`}>{title}</h1>}
+      {title && (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexGrow: 1 }}>
+          {logo && <img src={logo} alt="" style={{ width: 26, height: 26, borderRadius: 8, flexShrink: 0 }} />}
+          <h1 className={back ? 'ttl-s' : `ttl ${brand ? 'ttl--brand' : ''}`}>{title}</h1>
+        </span>
+      )}
       {children}
     </div>
   );
